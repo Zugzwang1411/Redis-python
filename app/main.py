@@ -12,9 +12,10 @@ def main():
 
     while True:
         data = connection.recv(1024)
-        ping_count = data.count(b"PING")
-
-        for _ in range(ping_count):
+        if not data:
+            break
+        message = data.decode().strip()
+        if "PING" in message:
             connection.sendall(b"+PONG\r\n")
 
 if __name__ == "__main__":
