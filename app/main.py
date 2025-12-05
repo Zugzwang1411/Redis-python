@@ -12,7 +12,7 @@ def main():
 
     while True:
         connection.recv(1024)
-        connection.sendall(b"PONG")
+        connection.sendall(b"+PONG\r\n")
 
 if __name__ == "__main__":
     main()
