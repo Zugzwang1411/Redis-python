@@ -14,6 +14,7 @@ def main():
         data = connection.recv(1024)
         if not data:
             break
+        print("msg found: ", data)
         message = data.decode().strip()
         if "PING" in message:
             connection.sendall(b"+PONG\r\n")
