@@ -11,8 +11,11 @@ def main():
     connection, _ = server_socket.accept()
 
     while True:
-        connection.recv(1024)
-        connection.sendall(b"+PONG\r\n")
+        data = connection.recv(1024)
+        ping_count = data.count(b"PING")
+
+        for _ in range(ping_count):
+            connection.sendall(b"+PONG\r\n")
 
 if __name__ == "__main__":
     main()
