@@ -177,6 +177,24 @@ def handle_client(connection):
                     value = entry["value"]
                     msg = f"${len(value)}\r\n{value}\r\n"
                     connection.sendall(msg.encode())
+        elif command == "TYPE":
+            if len(arguments) != 1:
+                connection.sendall(b"-ERR wrong number of arguments for 'type' command\r\n")
+            else:
+                key = arguments[0]
+                if key not in Database:
+                    # Key doesn't exist
+                    connection.sendall(b"+none\r\n")
+                else:
+                    # Check if key has expired
+                    entry = Database[key]
+                    if entry["expiry"] is not None and time.time() > entry["expiry"]:
+                        # Key has expired, remove it
+                        del Database[key]
+                        connection.sendall(b"+none\r\n")
+                    else:
+                        # Key exists and is a string (Redis TYPE command returns "string" for our simple values)
+                        connection.sendall(b"+string\r\n")
         elif command:
             # Handle other commands here in the future
             print(f"Received unknown command: {command}, arguments: {arguments}")
