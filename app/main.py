@@ -103,6 +103,7 @@ def parse_command(data):
 
 def handle_client(connection):
     """Handle a single client connection - can receive multiple commands"""
+    Database = {}
     while True:
         data = connection.recv(1024)
         if not data:
@@ -122,7 +123,21 @@ def handle_client(connection):
                 connection.sendall(response.encode())
             else:
                 connection.sendall(b"-ERR wrong number of arguments for 'echo' command\r\n")
-        elif command:
+        elif command == "SET":
+            if len(arguments) != 2:
+                connection.sendall(b"-ERR wrong number of arguments for 'set' command\r\n")
+            key = arguments[0]
+            value = arguments[1]
+            Database[key] = value
+            connection.sendall(b"+OK\r\n")
+        elif command == "GET":
+            if(len(arguments)!=1):
+                connection.sendall(b"-ERR wrong number of arguments for 'get' command\r\n")
+            key = arguments[0]
+            if key not in Database:
+                connection.sendall(b"$-1\r\n")
+            else:
+                connection.sendall(b"${len(Database[key])}\r\n{Database[key]}\r\n")
             # Handle other commands here in the future
             print(f"Received command: {command}, arguments: {arguments}")
     
