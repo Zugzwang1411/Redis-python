@@ -1,5 +1,6 @@
 import socket
 import threading
+import time
 
 
 def parse_resp(data, pos=0):
@@ -124,23 +125,61 @@ def handle_client(connection):
             else:
                 connection.sendall(b"-ERR wrong number of arguments for 'echo' command\r\n")
         elif command == "SET":
-            if len(arguments) != 2:
+            if len(arguments) < 2:
                 connection.sendall(b"-ERR wrong number of arguments for 'set' command\r\n")
-            key = arguments[0]
-            value = arguments[1]
-            Database[key] = value
-            connection.sendall(b"+OK\r\n")
+            elif len(arguments) == 2:
+                # SET key value (no expiry)
+                key = arguments[0]
+                value = arguments[1]
+                Database[key] = {"value": value, "expiry": None}
+                connection.sendall(b"+OK\r\n")
+            elif len(arguments) == 4:
+                # SET key value EX seconds or SET key value PX milliseconds
+                key = arguments[0]
+                value = arguments[1]
+                expiry_type = arguments[2].upper()
+                try:
+                    expiry_time = int(arguments[3])
+                except ValueError:
+                    connection.sendall(b"-ERR value is not an integer or out of range\r\n")
+                    continue
+                
+                if expiry_type == "EX":
+                    # Expiry in seconds
+                    expiry_timestamp = time.time() + expiry_time
+                    Database[key] = {"value": value, "expiry": expiry_timestamp}
+                    connection.sendall(b"+OK\r\n")
+                elif expiry_type == "PX":
+                    # Expiry in milliseconds
+                    expiry_timestamp = time.time() + (expiry_time / 1000.0)
+                    Database[key] = {"value": value, "expiry": expiry_timestamp}
+                    connection.sendall(b"+OK\r\n")
+                else:
+                    connection.sendall(b"-ERR syntax error\r\n")
+            else:
+                connection.sendall(b"-ERR wrong number of arguments for 'set' command\r\n")
         elif command == "GET":
-            if(len(arguments)!=1):
+            if len(arguments) != 1:
                 connection.sendall(b"-ERR wrong number of arguments for 'get' command\r\n")
+                continue
             key = arguments[0]
             if key not in Database:
                 connection.sendall(b"$-1\r\n")
             else:
-                msg = f"${len(Database[key])}\r\n{Database[key]}\r\n"
-                connection.sendall(msg.encode())
+                # Check if key has expired
+                entry = Database[key]
+                if entry["expiry"] is not None and time.time() > entry["expiry"]:
+                    # Key has expired, remove it
+                    del Database[key]
+                    connection.sendall(b"$-1\r\n")
+                else:
+                    # Key is valid, return the value
+                    value = entry["value"]
+                    msg = f"${len(value)}\r\n{value}\r\n"
+                    connection.sendall(msg.encode())
+        elif command:
             # Handle other commands here in the future
-            print(f"Received command: {command}, arguments: {arguments}")
+            print(f"Received unknown command: {command}, arguments: {arguments}")
     
     connection.close()
 
