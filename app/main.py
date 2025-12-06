@@ -137,7 +137,8 @@ def handle_client(connection):
             if key not in Database:
                 connection.sendall(b"$-1\r\n")
             else:
-                connection.sendall(b"${len(Database[key])}\r\n{Database[key]}\r\n")
+                msg = f"${len(Database[key])}\r\n{Database[key]}\r\n"
+                connection.sendall(msg.encode())
             # Handle other commands here in the future
             print(f"Received command: {command}, arguments: {arguments}")
     
