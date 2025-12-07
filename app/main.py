@@ -132,6 +132,7 @@ def handle_client(connection):
     """Handle a single client connection - can receive multiple commands"""
     Database = {}
     stream_last_ids = {}
+    time_seq_no_dict = {}
     while True:
         data = connection.recv(1024)
         if not data:
@@ -215,6 +216,17 @@ def handle_client(connection):
             else:
                 stream_key = arguments[0]
                 entry_id = arguments[1]
+                time, seq_no = entry_id.split("-")
+                time = int(time)
+                if seq_no=="*":
+                    if time not in time_seq_no_dict:
+                        time_seq_no_dict[time] = 0
+                        seq_no = 0
+                    else:
+                        seq_no = time_seq_no_dict[time]+1
+                        time_seq_no_dict[time] = seq_no
+                
+                entry_id = f"{time}-{seq_no}"
                 if not validate_entry_id(entry_id, stream_last_ids, stream_key, connection):
                     continue
                 
