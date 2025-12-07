@@ -269,8 +269,27 @@ def handle_client(connection):
                     entry_id = f"{time_part_int}-{seq_no}"
 
                 elif entry_id_input == "*":
-                    entry_id_time = time.time()
-                    entry_id = f"{entry_id_time}-0"
+                    entry_id_time = int(time.time()*1000)
+                    if stream_key in Database and Database[stream_key]["type"] == "stream":
+                        entries = Database[stream_key]["entries"]
+                        if entries:
+                            last_seq = -1
+                            for entry in entries:
+                                entry_id = entry["id"]
+                                entry_time_str, entry_seq_str = entry_id.split("-")
+                                entry_time = int(entry_time_str)
+                                entry_seq = int(entry_seq_str)
+                                if entry_time == entry_id_time and entry_seq > last_seq:
+                                    last_seq = entry_seq
+                            if last_seq >= 0:
+                                seq_no = last_seq + 1
+                            else:
+                                seq_no = 0
+                        else:
+                            seq_no = 0
+                    else:
+                        seq_no = 0
+                    entry_id = f"{entry_id_time}-{seq_no}"
 
                 else:
                     # Explicit ID provided
