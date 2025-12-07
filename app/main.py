@@ -102,9 +102,34 @@ def parse_command(data):
         return None, None
 
 
+def validate_entry_id(entry_id, stream_last_ids, stream_key, connection):
+    time ,  seq_no = entry_id.split("-")
+    time = int(time)
+    seq_no = int(seq_no)
+
+    if time==0 and seq_no==0:
+        connection.sendall(b"-ERR The ID specified in XADD must be greater than 0-0\r\n")
+        return False
+
+    if stream_key not in stream_last_ids:
+        if time > 0 or (time == 0 and seq_no > 0):
+            return True
+        else:
+            connection.sendall(b"-ERR The ID specified in XADD is equal or smaller than the target stream top item\r\n")
+            return False
+    else:
+        last_id = stream_last_ids[stream_key]
+        last_time, last_seq_no = last_id.split("-")
+        if time > last_time or (time == last_time and seq_no > last_seq_no):
+            return True
+        else:
+            connection.sendall(b"-ERR The ID specified in XADD is equal or smaller than the target stream top item\r\n")
+            return False
+
 def handle_client(connection):
     """Handle a single client connection - can receive multiple commands"""
     Database = {}
+    stream_last_ids = {}
     while True:
         data = connection.recv(1024)
         if not data:
@@ -188,6 +213,8 @@ def handle_client(connection):
             else:
                 stream_key = arguments[0]
                 entry_id = arguments[1]
+                if not validate_entry_id(entry_id, stream_last_ids, stream_key, connection):
+                    continue
                 
                 # Parse field-value pairs
                 fields = {}
