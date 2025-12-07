@@ -267,6 +267,11 @@ def handle_client(connection):
                             seq_no = 0
                     
                     entry_id = f"{time_part_int}-{seq_no}"
+
+                elif entry_id_input == "*":
+                    entry_id_time = time.time()
+                    entry_id = f"{entry_id_time}-0"
+
                 else:
                     # Explicit ID provided
                     entry_id = entry_id_input
