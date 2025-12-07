@@ -120,6 +120,8 @@ def validate_entry_id(entry_id, stream_last_ids, stream_key, connection):
     else:
         last_id = stream_last_ids[stream_key]
         last_time, last_seq_no = last_id.split("-")
+        last_time = int(last_time)
+        last_seq_no = int(last_seq_no)
         if time > last_time or (time == last_time and seq_no > last_seq_no):
             return True
         else:
@@ -236,6 +238,8 @@ def handle_client(connection):
                     # Add entry to stream
                     stream_entry = {"id": entry_id, "fields": fields}
                     entry["entries"].append(stream_entry)
+
+                    stream_last_ids[stream_key] = entry_id
                     
                     # Return entry ID as bulk string
                     response = f"${len(entry_id)}\r\n{entry_id}\r\n"
