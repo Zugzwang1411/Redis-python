@@ -131,7 +131,7 @@ def handle_client(connection):
                 # SET key value (no expiry)
                 key = arguments[0]
                 value = arguments[1]
-                Database[key] = {"value": value, "expiry": None}
+                Database[key] = {"type": "string", "value": value, "expiry": None}
                 connection.sendall(b"+OK\r\n")
             elif len(arguments) == 4:
                 # SET key value EX seconds or SET key value PX milliseconds
@@ -147,12 +147,12 @@ def handle_client(connection):
                 if expiry_type == "EX":
                     # Expiry in seconds
                     expiry_timestamp = time.time() + expiry_time
-                    Database[key] = {"value": value, "expiry": expiry_timestamp}
+                    Database[key] = {"type": "string", "value": value, "expiry": expiry_timestamp}
                     connection.sendall(b"+OK\r\n")
                 elif expiry_type == "PX":
                     # Expiry in milliseconds
                     expiry_timestamp = time.time() + (expiry_time / 1000.0)
-                    Database[key] = {"value": value, "expiry": expiry_timestamp}
+                    Database[key] = {"type": "string", "value": value, "expiry": expiry_timestamp}
                     connection.sendall(b"+OK\r\n")
                 else:
                     connection.sendall(b"-ERR syntax error\r\n")
@@ -166,35 +166,75 @@ def handle_client(connection):
             if key not in Database:
                 connection.sendall(b"$-1\r\n")
             else:
-                # Check if key has expired
                 entry = Database[key]
-                if entry["expiry"] is not None and time.time() > entry["expiry"]:
-                    # Key has expired, remove it
-                    del Database[key]
-                    connection.sendall(b"$-1\r\n")
+                
+                # Check expiry only for strings
+                if entry["type"] == "string":
+                    if entry.get("expiry") is not None and time.time() > entry["expiry"]:
+                        del Database[key]
+                        connection.sendall(b"$-1\r\n")
+                    else:
+                        value = entry["value"]
+                        msg = f"${len(value)}\r\n{value}\r\n"
+                        connection.sendall(msg.encode())
                 else:
-                    # Key is valid, return the value
-                    value = entry["value"]
-                    msg = f"${len(value)}\r\n{value}\r\n"
-                    connection.sendall(msg.encode())
+                    # Stream or other types - GET only works on strings
+                    connection.sendall(b"$-1\r\n")
+        elif command == "XADD":
+            # XADD stream_key entry_id field1 value1 field2 value2 ...
+            # Minimum: stream_key and entry_id (2 args), plus at least one field-value pair (2 more args) = 4 args minimum
+            if len(arguments) < 4 or len(arguments) % 2 != 0:
+                connection.sendall(b"-ERR wrong number of arguments for 'xadd' command\r\n")
+            else:
+                stream_key = arguments[0]
+                entry_id = arguments[1]
+                
+                # Parse field-value pairs
+                fields = {}
+                for i in range(2, len(arguments), 2):
+                    field = arguments[i]
+                    value = arguments[i + 1]
+                    fields[field] = value
+                
+                # Create stream if it doesn't exist, or get existing stream
+                if stream_key not in Database:
+                    Database[stream_key] = {"type": "stream", "entries": []}
+                
+                entry = Database[stream_key]
+                
+                # Check if it's actually a stream (not overwriting a string)
+                if entry["type"] != "stream":
+                    connection.sendall(b"-ERR WRONGTYPE Operation against a key holding the wrong kind of value\r\n")
+                else:
+                    # Add entry to stream
+                    stream_entry = {"id": entry_id, "fields": fields}
+                    entry["entries"].append(stream_entry)
+                    
+                    # Return entry ID as bulk string
+                    response = f"${len(entry_id)}\r\n{entry_id}\r\n"
+                    connection.sendall(response.encode())
         elif command == "TYPE":
             if len(arguments) != 1:
                 connection.sendall(b"-ERR wrong number of arguments for 'type' command\r\n")
             else:
                 key = arguments[0]
                 if key not in Database:
-                    # Key doesn't exist
                     connection.sendall(b"+none\r\n")
                 else:
-                    # Check if key has expired
                     entry = Database[key]
-                    if entry["expiry"] is not None and time.time() > entry["expiry"]:
-                        # Key has expired, remove it
+                    
+                    # Check expiry for strings
+                    if entry["type"] == "string" and entry["expiry"] is not None and time.time() > entry["expiry"]:
                         del Database[key]
                         connection.sendall(b"+none\r\n")
                     else:
-                        # Key exists and is a string (Redis TYPE command returns "string" for our simple values)
-                        connection.sendall(b"+string\r\n")
+                        # Return the type
+                        if entry["type"] == "string":
+                            connection.sendall(b"+string\r\n")
+                        elif entry["type"] == "stream":
+                            connection.sendall(b"+stream\r\n")
+                        else:
+                            connection.sendall(b"+none\r\n")
         elif command:
             # Handle other commands here in the future
             print(f"Received unknown command: {command}, arguments: {arguments}")
