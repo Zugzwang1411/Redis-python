@@ -103,11 +103,15 @@ def parse_command(data):
 
 
 def validate_entry_id(entry_id, stream_last_ids, stream_key, connection):
-    time ,  seq_no = entry_id.split("-")
+    # Don't validate if entry_id contains * (it will be auto-generated)
+    if "*" in entry_id:
+        return True
+    
+    time, seq_no = entry_id.split("-")
     time = int(time)
     seq_no = int(seq_no)
 
-    if time==0 and seq_no==0:
+    if time == 0 and seq_no == 0:
         connection.sendall(b"-ERR The ID specified in XADD must be greater than 0-0\r\n")
         return False
 
@@ -132,7 +136,6 @@ def handle_client(connection):
     """Handle a single client connection - can receive multiple commands"""
     Database = {}
     stream_last_ids = {}
-    time_seq_no_dict = {}
     while True:
         data = connection.recv(1024)
         if not data:
@@ -215,20 +218,60 @@ def handle_client(connection):
                 connection.sendall(b"-ERR wrong number of arguments for 'xadd' command\r\n")
             else:
                 stream_key = arguments[0]
-                entry_id = arguments[1]
-                time, seq_no = entry_id.split("-")
-                time = int(time)
-                if seq_no=="*":
-                    if time not in time_seq_no_dict:
-                        time_seq_no_dict[time] = 0
-                        seq_no = 0
-                    else:
-                        seq_no = time_seq_no_dict[time]+1
-                        time_seq_no_dict[time] = seq_no
+                entry_id_input = arguments[1]  # Original input (might contain *)
                 
-                entry_id = f"{time}-{seq_no}"
-                if not validate_entry_id(entry_id, stream_last_ids, stream_key, connection):
-                    continue
+                # Check if sequence number needs to be auto-generated
+                if entry_id_input.endswith("-*"):
+                    time_part_str = entry_id_input.split("-")[0]
+                    try:
+                        time_part_int = int(time_part_str)
+                    except ValueError:
+                        connection.sendall(b"-ERR Invalid ID format\r\n")
+                        continue
+                    
+                    # Find the last entry ID for this stream with the same time part
+                    if stream_key in Database and Database[stream_key]["type"] == "stream":
+                        entries = Database[stream_key]["entries"]
+                        if entries:
+                            # Find the last entry with the same time part
+                            last_seq = -1
+                            for entry in entries:
+                                entry_id = entry["id"]
+                                entry_time_str, entry_seq_str = entry_id.split("-")
+                                entry_time = int(entry_time_str)
+                                entry_seq = int(entry_seq_str)
+                                
+                                if entry_time == time_part_int and entry_seq > last_seq:
+                                    last_seq = entry_seq
+                            
+                            if last_seq >= 0:
+                                # Found entries with same time part, increment
+                                seq_no = last_seq + 1
+                            else:
+                                # No entries with this time part
+                                if time_part_int == 0:
+                                    seq_no = 1  # Special case: time 0 starts at 1
+                                else:
+                                    seq_no = 0
+                        else:
+                            # Stream is empty
+                            if time_part_int == 0:
+                                seq_no = 1  # Special case: time 0 starts at 1
+                            else:
+                                seq_no = 0
+                    else:
+                        # Stream doesn't exist yet
+                        if time_part_int == 0:
+                            seq_no = 1  # Special case: time 0 starts at 1
+                        else:
+                            seq_no = 0
+                    
+                    entry_id = f"{time_part_int}-{seq_no}"
+                else:
+                    # Explicit ID provided
+                    entry_id = entry_id_input
+                    if not validate_entry_id(entry_id, stream_last_ids, stream_key, connection):
+                        continue
                 
                 # Parse field-value pairs
                 fields = {}
@@ -237,7 +280,7 @@ def handle_client(connection):
                     value = arguments[i + 1]
                     fields[field] = value
                 
-                # Create stream if it doesn't exist, or get existing stream
+                # Create stream if it doesn't exist
                 if stream_key not in Database:
                     Database[stream_key] = {"type": "stream", "entries": []}
                 
@@ -250,7 +293,8 @@ def handle_client(connection):
                     # Add entry to stream
                     stream_entry = {"id": entry_id, "fields": fields}
                     entry["entries"].append(stream_entry)
-
+                    
+                    # Update the last ID for this stream
                     stream_last_ids[stream_key] = entry_id
                     
                     # Return entry ID as bulk string
