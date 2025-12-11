@@ -102,6 +102,35 @@ def parse_command(data):
         return None, None
 
 
+def parse_entry_id(entry_id, is_start=True, max_seq=None):
+    """
+    Parse an entry ID, handling optional sequence numbers.
+    For start ID: if sequence missing, defaults to 0
+    For end ID: if sequence missing, defaults to max_seq (or very large number)
+    Returns: (time, seq) tuple
+    """
+    if "-" in entry_id:
+        parts = entry_id.split("-")
+        time_part = int(parts[0])
+        if len(parts) > 1 and parts[1]:
+            seq_part = int(parts[1])
+        else:
+            # Sequence number is missing
+            if is_start:
+                seq_part = 0
+            else:
+                # For end ID, use max sequence if provided, otherwise use a very large number
+                seq_part = max_seq if max_seq is not None else 999999999
+        return (time_part, seq_part)
+    else:
+        # Just a timestamp
+        time_part = int(entry_id)
+        if is_start:
+            return (time_part, 0)
+        else:
+            return (time_part, max_seq if max_seq is not None else 999999999)
+
+
 def validate_entry_id(entry_id, stream_last_ids, stream_key, connection):
     # Don't validate if entry_id contains * (it will be auto-generated)
     if "*" in entry_id:
@@ -346,8 +375,81 @@ def handle_client(connection):
                             connection.sendall(b"+stream\r\n")
                         else:
                             connection.sendall(b"+none\r\n")
+        
+        elif command == "XRANGE":
+            if len(arguments) != 3:
+                connection.sendall(b"-ERR wrong number of arguments for 'xrange' command\r\n")
+            else:
+                stream_key = arguments[0]
+                start_id = arguments[1]
+                end_id = arguments[2]
+                
+                if stream_key not in Database or Database[stream_key]["type"] != "stream":
+                    connection.sendall(b"-ERR WRONGTYPE Operation against a key holding the wrong kind of value\r\n")
+                else:
+                    entries = Database[stream_key]["entries"]
+                    
+                    end_time_str = end_id.split("-")[0] if "-" in end_id else end_id
+                    try:
+                        end_time_for_max = int(end_time_str)
+                    except ValueError:
+                        connection.sendall(b"-ERR Invalid ID format\r\n")
+                        continue
+                    
+                    max_seq = None
+                    if entries:
+                        for entry in entries:
+                            entry_id = entry["id"]
+                            entry_time_str, entry_seq_str = entry_id.split("-")
+                            entry_time = int(entry_time_str)
+                            entry_seq = int(entry_seq_str)
+                            if entry_time == end_time_for_max:
+                                if max_seq is None or entry_seq > max_seq:
+                                    max_seq = entry_seq
+                    
+                    start_time, start_seq = parse_entry_id(start_id, is_start=True)
+                    end_time, end_seq = parse_entry_id(end_id, is_start=False, max_seq=max_seq)
+                    
+                    result_entries = []
+                    for entry in entries:
+                        entry_id = entry["id"]
+                        entry_time_str, entry_seq_str = entry_id.split("-")
+                        entry_time = int(entry_time_str)
+                        entry_seq = int(entry_seq_str)
+                        
+                        entry_after_start = (entry_time > start_time) or \
+                                          (entry_time == start_time and entry_seq >= start_seq)
+                        
+                        entry_before_end = (entry_time < end_time) or \
+                                         (entry_time == end_time and entry_seq <= end_seq)
+                        
+                        if not entry_after_start:
+                            continue
+                        elif not entry_before_end:
+                            break
+                        else:
+                            result_entries.append(entry)
+                    
+                    response_parts = []
+                    response_parts.append(f"*{len(result_entries)}\r\n")
+                    
+                    for entry in result_entries:
+                        entry_id = entry["id"]
+                        fields = entry["fields"]
+                    
+                        response_parts.append("*2\r\n")
+                        response_parts.append(f"${len(entry_id)}\r\n{entry_id}\r\n")
+                        
+                        field_count = len(fields) * 2
+                        response_parts.append(f"*{field_count}\r\n")
+                        
+                        for field, value in fields.items():
+                            response_parts.append(f"${len(field)}\r\n{field}\r\n")
+                            response_parts.append(f"${len(value)}\r\n{value}\r\n")
+                    
+                    response = "".join(response_parts)
+                    connection.sendall(response.encode())
         elif command:
-            # Handle other commands here in the future
             print(f"Received unknown command: {command}, arguments: {arguments}")
     
     connection.close()
