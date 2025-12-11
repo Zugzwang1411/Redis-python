@@ -109,7 +109,11 @@ def parse_entry_id(entry_id, is_start=True, max_seq=None):
     For end ID: if sequence missing, defaults to max_seq (or very large number)
     Returns: (time, seq) tuple
     """
-    if "-" in entry_id:
+
+    if entry_id == "-":
+        return (0,0)
+    
+    elif "-" in entry_id:
         parts = entry_id.split("-")
         time_part = int(parts[0])
         if len(parts) > 1 and parts[1]:
