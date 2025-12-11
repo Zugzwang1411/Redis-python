@@ -112,9 +112,6 @@ def parse_entry_id(entry_id, is_start=True, max_seq=None):
 
     if entry_id == "-":
         return (0,0)
-
-    elif entry_id == "+":
-        return (999999999,999999999)
     
     elif "-" in entry_id:
         parts = entry_id.split("-")
@@ -395,7 +392,10 @@ def handle_client(connection):
                     connection.sendall(b"-ERR WRONGTYPE Operation against a key holding the wrong kind of value\r\n")
                 else:
                     entries = Database[stream_key]["entries"]
-                    
+                    if end_id == "+":
+                        end_time = 999999999
+                        end_seq = 999999999
+                        entry_id = f"{end_time}-{end_seq}"
                     end_time_str = end_id.split("-")[0] if "-" in end_id else end_id
                     try:
                         end_time_for_max = int(end_time_str)
