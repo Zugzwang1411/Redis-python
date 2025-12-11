@@ -112,6 +112,9 @@ def parse_entry_id(entry_id, is_start=True, max_seq=None):
 
     if entry_id == "-":
         return (0,0)
+
+    elif entry_id == "+":
+        return (999999999,999999999)
     
     elif "-" in entry_id:
         parts = entry_id.split("-")
