@@ -395,7 +395,7 @@ def handle_client(connection):
                     if end_id == "+":
                         end_time = 999999999
                         end_seq = 999999999
-                        entry_id = f"{end_time}-{end_seq}"
+                        end_id = f"{end_time}-{end_seq}"
                     end_time_str = end_id.split("-")[0] if "-" in end_id else end_id
                     try:
                         end_time_for_max = int(end_time_str)
