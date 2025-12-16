@@ -2,6 +2,14 @@ import socket
 import threading
 import time
 
+# Global dictionary to store Condition objects for each stream (for blocking XREAD)
+stream_conditions = {}
+stream_conditions_lock = threading.Lock()
+
+# Global database shared across all client threads
+global_database = {}
+global_database_lock = threading.Lock()
+
 
 def parse_resp(data, pos=0):
     """
@@ -167,7 +175,8 @@ def validate_entry_id(entry_id, stream_last_ids, stream_key, connection):
 
 def handle_client(connection):
     """Handle a single client connection - can receive multiple commands"""
-    Database = {}
+    # Use global database shared across all clients
+    Database = global_database
     stream_last_ids = {}
     while True:
         data = connection.recv(1024)
@@ -354,6 +363,14 @@ def handle_client(connection):
                     # Update the last ID for this stream
                     stream_last_ids[stream_key] = entry_id
                     
+                    # Notify any waiting XREAD commands
+                    with stream_conditions_lock:
+                        if stream_key in stream_conditions:
+                            condition = stream_conditions[stream_key]
+                            condition.acquire()
+                            condition.notify_all()
+                            condition.release()
+                    
                     # Return entry ID as bulk string
                     response = f"${len(entry_id)}\r\n{entry_id}\r\n"
                     connection.sendall(response.encode())
@@ -458,109 +475,210 @@ def handle_client(connection):
                     connection.sendall(response.encode())
 
         elif command == "XREAD":
-            # XREAD STREAMS <key1> <key2> ... <id1> <id2> ...
-            # Format: XREAD STREAMS stream_key1 stream_key2 ... entry_id1 entry_id2 ...
-            if len(arguments) < 3 or arguments[0].upper() != "STREAMS" or (len(arguments) - 1) % 2 != 0:
+            # XREAD [BLOCK <milliseconds>] STREAMS <key1> <key2> ... <id1> <id2> ...
+            # Format: XREAD [BLOCK timeout] STREAMS stream_key1 stream_key2 ... entry_id1 entry_id2 ...
+            
+            # Parse BLOCK parameter if present
+            block_timeout = None
+            streams_index = 0
+            
+            if len(arguments) >= 2 and arguments[0].upper() == "BLOCK":
+                try:
+                    block_timeout = int(arguments[1])
+                    streams_index = 2
+                except ValueError:
+                    connection.sendall(b"-ERR value is not an integer or out of range\r\n")
+                    continue
+            
+            # Find STREAMS keyword
+            streams_found = False
+            for i in range(streams_index, len(arguments)):
+                if arguments[i].upper() == "STREAMS":
+                    streams_index = i
+                    streams_found = True
+                    break
+            
+            if not streams_found or len(arguments) < streams_index + 3 or (len(arguments) - streams_index - 1) % 2 != 0:
                 connection.sendall(b"-ERR wrong number of arguments for 'xread' command\r\n")
             else:
                 # Parse key-id pairs
                 # After "STREAMS", we have: key1, key2, ..., id1, id2, ...
-                num_streams = (len(arguments) - 1) // 2
+                num_streams = (len(arguments) - streams_index - 1) // 2
                 key_id_pairs = []
                 for i in range(num_streams):
                     key_id_pairs.append({
-                        "key": arguments[1 + i],
-                        "id": arguments[1 + num_streams + i]
+                        "key": arguments[streams_index + 1 + i],
+                        "id": arguments[streams_index + 1 + num_streams + i]
                     })
                 
-                # Process all streams and collect results
-                streams_with_entries = []
-                for key_id_pair in key_id_pairs:
-                    stream_key = key_id_pair["key"]
-                    start_id = key_id_pair["id"]
-                    
-                    if stream_key not in Database or Database[stream_key]["type"] != "stream":
-                        # Stream doesn't exist, skip it
-                        continue
-                    
-                    entries = Database[stream_key]["entries"]
-                    start_time, start_seq = parse_entry_id(start_id, is_start=True)
-                    
-                    # XREAD is exclusive - get entries with ID > start_id
-                    result_entries = []
-                    for entry in entries:
-                        entry_id = entry["id"]
-                        entry_time_str, entry_seq_str = entry_id.split("-")
-                        entry_time = int(entry_time_str)
-                        entry_seq = int(entry_seq_str)
+                # Helper function to get entries for streams
+                def get_entries_for_streams(key_id_pairs, Database):
+                    streams_with_entries = []
+                    for key_id_pair in key_id_pairs:
+                        stream_key = key_id_pair["key"]
+                        start_id = key_id_pair["id"]
                         
-                        # Check if entry ID is greater than start_id (exclusive)
-                        entry_greater = (entry_time > start_time) or \
-                                       (entry_time == start_time and entry_seq > start_seq)
+                        if stream_key not in Database or Database[stream_key]["type"] != "stream":
+                            # Stream doesn't exist, skip it
+                            continue
                         
-                        if entry_greater:
-                            result_entries.append(entry)
-                    
-                    # Only include streams that have matching entries
-                    if len(result_entries) > 0:
-                        streams_with_entries.append({
-                            "key": stream_key,
-                            "entries": result_entries
-                        })
-                
-                # Build RESP array response
-                # Format: *<num_streams>\r\n
-                #         For each stream:
-                #           *2\r\n (stream: [key, entries])
-                #           $<key_len>\r\n<key>\r\n
-                #           *<num_entries>\r\n
-                #           For each entry: *2\r\n$<id_len>\r\n<id>\r\n*<num_fields*2>\r\n...
-                response_parts = []
-                
-                if len(streams_with_entries) == 0:
-                    # No streams with entries, return empty array
-                    connection.sendall(b"*0\r\n")
-                else:
-                    # Outer array: number of streams
-                    response_parts.append(f"*{len(streams_with_entries)}\r\n")
-                    
-                    # Process each stream
-                    for stream_data in streams_with_entries:
-                        stream_key = stream_data["key"]
-                        result_entries = stream_data["entries"]
+                        entries = Database[stream_key]["entries"]
                         
-                        # Stream array: [key, entries]
-                        response_parts.append("*2\r\n")
+                        # Parse start ID
+                        try:
+                            if "-" not in start_id:
+                                continue
+                            start_time_str, start_seq_str = start_id.split("-")
+                            start_time = int(start_time_str)
+                            start_seq = int(start_seq_str)
+                        except (ValueError, IndexError):
+                            continue
                         
-                        # Stream key
-                        response_parts.append(f"${len(stream_key)}\r\n{stream_key}\r\n")
-                        
-                        # Entries array
-                        response_parts.append(f"*{len(result_entries)}\r\n")
-                        
-                        # Each entry: [id, [field1, value1, ...]]
-                        for entry in result_entries:
+                        # XREAD is exclusive - get entries with ID > start_id
+                        result_entries = []
+                        for entry in entries:
                             entry_id = entry["id"]
-                            fields = entry["fields"]
+                            entry_time_str, entry_seq_str = entry_id.split("-")
+                            entry_time = int(entry_time_str)
+                            entry_seq = int(entry_seq_str)
                             
-                            # Entry array has 2 elements
+                            # Check if entry ID is greater than start_id (exclusive)
+                            entry_greater = (entry_time > start_time) or \
+                                           (entry_time == start_time and entry_seq > start_seq)
+                            
+                            if entry_greater:
+                                result_entries.append(entry)
+                        
+                        # Only include streams that have matching entries
+                        if len(result_entries) > 0:
+                            streams_with_entries.append({
+                                "key": stream_key,
+                                "entries": result_entries
+                            })
+                    return streams_with_entries
+                
+                # Check for immediate results
+                streams_with_entries = get_entries_for_streams(key_id_pairs, Database)
+                
+                # If we have results or not blocking, return immediately
+                if len(streams_with_entries) > 0 or block_timeout is None:
+                    # Build and send response
+                    response_parts = []
+                    
+                    if len(streams_with_entries) == 0:
+                        # No streams with entries, return empty array
+                        connection.sendall(b"*0\r\n")
+                    else:
+                        # Outer array: number of streams
+                        response_parts.append(f"*{len(streams_with_entries)}\r\n")
+                        
+                        # Process each stream
+                        for stream_data in streams_with_entries:
+                            stream_key = stream_data["key"]
+                            result_entries = stream_data["entries"]
+                            
+                            # Stream array: [key, entries]
                             response_parts.append("*2\r\n")
                             
-                            # Entry ID
-                            response_parts.append(f"${len(entry_id)}\r\n{entry_id}\r\n")
+                            # Stream key
+                            response_parts.append(f"${len(stream_key)}\r\n{stream_key}\r\n")
                             
-                            # Field-value pairs array
-                            field_count = len(fields) * 2
-                            response_parts.append(f"*{field_count}\r\n")
+                            # Entries array
+                            response_parts.append(f"*{len(result_entries)}\r\n")
                             
-                            # Add fields in order
-                            for field, value in fields.items():
-                                response_parts.append(f"${len(field)}\r\n{field}\r\n")
-                                response_parts.append(f"${len(value)}\r\n{value}\r\n")
+                            # Each entry: [id, [field1, value1, ...]]
+                            for entry in result_entries:
+                                entry_id = entry["id"]
+                                fields = entry["fields"]
+                                
+                                # Entry array has 2 elements
+                                response_parts.append("*2\r\n")
+                                
+                                # Entry ID
+                                response_parts.append(f"${len(entry_id)}\r\n{entry_id}\r\n")
+                                
+                                # Field-value pairs array
+                                field_count = len(fields) * 2
+                                response_parts.append(f"*{field_count}\r\n")
+                                
+                                # Add fields in order
+                                for field, value in fields.items():
+                                    response_parts.append(f"${len(field)}\r\n{field}\r\n")
+                                    response_parts.append(f"${len(value)}\r\n{value}\r\n")
+                        
+                        # Send response once after processing all streams
+                        response = "".join(response_parts)
+                        connection.sendall(response.encode())
+                else:
+                    # Blocking mode: wait for new entries
+                    # Get or create condition for each stream
+                    conditions = []
+                    for key_id_pair in key_id_pairs:
+                        stream_key = key_id_pair["key"]
+                        with stream_conditions_lock:
+                            if stream_key not in stream_conditions:
+                                stream_conditions[stream_key] = threading.Condition()
+                            conditions.append((stream_key, stream_conditions[stream_key]))
                     
-                    # Send response once after processing all streams
-                    response = "".join(response_parts)
-                    connection.sendall(response.encode())
+                    # Wait on conditions with timeout
+                    timeout_seconds = block_timeout / 1000.0
+                    start_time = time.time()
+                    
+                    # Use the first condition for waiting (or wait on all)
+                    if conditions:
+                        condition = conditions[0][1]
+                        condition.acquire()
+                        try:
+                            # Wait with timeout, checking for new entries when notified
+                            while True:
+                                elapsed = time.time() - start_time
+                                remaining = timeout_seconds - elapsed
+                                
+                                if remaining <= 0:
+                                    # Timeout expired
+                                    connection.sendall(b"*-1\r\n")
+                                    break
+                                
+                                # Wait with timeout (will be notified when XADD adds entry)
+                                condition.wait(min(remaining, 0.1))
+                                
+                                # Check if new entries are available
+                                streams_with_entries = get_entries_for_streams(key_id_pairs, Database)
+                                if len(streams_with_entries) > 0:
+                                    # New entries available, build and send response
+                                    response_parts = []
+                                    response_parts.append(f"*{len(streams_with_entries)}\r\n")
+                                    
+                                    for stream_data in streams_with_entries:
+                                        stream_key = stream_data["key"]
+                                        result_entries = stream_data["entries"]
+                                        
+                                        response_parts.append("*2\r\n")
+                                        response_parts.append(f"${len(stream_key)}\r\n{stream_key}\r\n")
+                                        response_parts.append(f"*{len(result_entries)}\r\n")
+                                        
+                                        for entry in result_entries:
+                                            entry_id = entry["id"]
+                                            fields = entry["fields"]
+                                            
+                                            response_parts.append("*2\r\n")
+                                            response_parts.append(f"${len(entry_id)}\r\n{entry_id}\r\n")
+                                            
+                                            field_count = len(fields) * 2
+                                            response_parts.append(f"*{field_count}\r\n")
+                                            
+                                            for field, value in fields.items():
+                                                response_parts.append(f"${len(field)}\r\n{field}\r\n")
+                                                response_parts.append(f"${len(value)}\r\n{value}\r\n")
+                                    
+                                    response = "".join(response_parts)
+                                    connection.sendall(response.encode())
+                                    break
+                        finally:
+                            condition.release()
+                    else:
+                        # No valid streams, return null
+                        connection.sendall(b"*-1\r\n")
         elif command:
             print(f"Received unknown command: {command}, arguments: {arguments}")
     
