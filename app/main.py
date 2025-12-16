@@ -456,6 +456,96 @@ def handle_client(connection):
                     
                     response = "".join(response_parts)
                     connection.sendall(response.encode())
+
+        elif command == "XREAD":
+            # XREAD STREAMS <key> <id>
+            # Format: XREAD STREAMS stream_key entry_id
+            if len(arguments) < 3 or arguments[0].upper() != "STREAMS":
+                connection.sendall(b"-ERR wrong number of arguments for 'xread' command\r\n")
+            else:
+                # arguments[0] = "STREAMS", arguments[1] = stream_key, arguments[2] = entry_id
+                stream_key = arguments[1]
+                start_id = arguments[2]
+                
+                if stream_key not in Database or Database[stream_key]["type"] != "stream":
+                    # Stream doesn't exist, return empty array
+                    connection.sendall(b"*0\r\n")
+                else:
+                    entries = Database[stream_key]["entries"]
+                    
+                    # Parse the start ID to compare
+                    try:
+                        if "-" not in start_id:
+                            connection.sendall(b"-ERR Invalid ID format\r\n")
+                            continue
+                        start_time_str, start_seq_str = start_id.split("-")
+                        start_time = int(start_time_str)
+                        start_seq = int(start_seq_str)
+                    except (ValueError, IndexError):
+                        connection.sendall(b"-ERR Invalid ID format\r\n")
+                        continue
+                    
+                    # XREAD is exclusive - get entries with ID > start_id
+                    result_entries = []
+                    for entry in entries:
+                        entry_id = entry["id"]
+                        entry_time_str, entry_seq_str = entry_id.split("-")
+                        entry_time = int(entry_time_str)
+                        entry_seq = int(entry_seq_str)
+                        
+                        # Check if entry ID is greater than start_id (exclusive)
+                        entry_greater = (entry_time > start_time) or \
+                                       (entry_time == start_time and entry_seq > start_seq)
+                        
+                        if entry_greater:
+                            result_entries.append(entry)
+                    
+                    # Build RESP array response
+                    # Format: *1\r\n (1 stream)
+                    #         *2\r\n (stream has 2 elements: key and entries)
+                    #         $<key_len>\r\n<key>\r\n
+                    #         *<num_entries>\r\n
+                    #         For each entry: *2\r\n$<id_len>\r\n<id>\r\n*<num_fields*2>\r\n...
+                    response_parts = []
+                    
+                    if len(result_entries) == 0:
+                        # No entries found, return empty array
+                        connection.sendall(b"*0\r\n")
+                    else:
+                        # Return array with 1 stream
+                        response_parts.append("*1\r\n")
+                        
+                        # Stream array: [key, entries]
+                        response_parts.append("*2\r\n")
+                        
+                        # Stream key
+                        response_parts.append(f"${len(stream_key)}\r\n{stream_key}\r\n")
+                        
+                        # Entries array
+                        response_parts.append(f"*{len(result_entries)}\r\n")
+                        
+                        # Each entry: [id, [field1, value1, ...]]
+                        for entry in result_entries:
+                            entry_id = entry["id"]
+                            fields = entry["fields"]
+                            
+                            # Entry array has 2 elements
+                            response_parts.append("*2\r\n")
+                            
+                            # Entry ID
+                            response_parts.append(f"${len(entry_id)}\r\n{entry_id}\r\n")
+                            
+                            # Field-value pairs array
+                            field_count = len(fields) * 2
+                            response_parts.append(f"*{field_count}\r\n")
+                            
+                            # Add fields in order
+                            for field, value in fields.items():
+                                response_parts.append(f"${len(field)}\r\n{field}\r\n")
+                                response_parts.append(f"${len(value)}\r\n{value}\r\n")
+                        
+                        response = "".join(response_parts)
+                        connection.sendall(response.encode())
         elif command:
             print(f"Received unknown command: {command}, arguments: {arguments}")
     
