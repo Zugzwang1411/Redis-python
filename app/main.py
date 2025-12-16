@@ -634,7 +634,7 @@ def handle_client(connection):
                                 elapsed = time.time() - start_time
                                 remaining = timeout_seconds - elapsed
                                 
-                                if remaining <= 0:
+                                if remaining <= 0 and timeout_seconds != 0:
                                     # Timeout expired
                                     connection.sendall(b"*-1\r\n")
                                     break
