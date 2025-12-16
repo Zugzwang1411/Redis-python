@@ -458,32 +458,33 @@ def handle_client(connection):
                     connection.sendall(response.encode())
 
         elif command == "XREAD":
-            # XREAD STREAMS <key> <id>
-            # Format: XREAD STREAMS stream_key entry_id
-            if len(arguments) < 3 or arguments[0].upper() != "STREAMS":
+            # XREAD STREAMS <key1> <key2> ... <id1> <id2> ...
+            # Format: XREAD STREAMS stream_key1 stream_key2 ... entry_id1 entry_id2 ...
+            if len(arguments) < 3 or arguments[0].upper() != "STREAMS" or (len(arguments) - 1) % 2 != 0:
                 connection.sendall(b"-ERR wrong number of arguments for 'xread' command\r\n")
             else:
-                # arguments[0] = "STREAMS", arguments[1] = stream_key, arguments[2] = entry_id
-                stream_key = arguments[1]
-                start_id = arguments[2]
+                # Parse key-id pairs
+                # After "STREAMS", we have: key1, key2, ..., id1, id2, ...
+                num_streams = (len(arguments) - 1) // 2
+                key_id_pairs = []
+                for i in range(num_streams):
+                    key_id_pairs.append({
+                        "key": arguments[1 + i],
+                        "id": arguments[1 + num_streams + i]
+                    })
                 
-                if stream_key not in Database or Database[stream_key]["type"] != "stream":
-                    # Stream doesn't exist, return empty array
-                    connection.sendall(b"*0\r\n")
-                else:
-                    entries = Database[stream_key]["entries"]
+                # Process all streams and collect results
+                streams_with_entries = []
+                for key_id_pair in key_id_pairs:
+                    stream_key = key_id_pair["key"]
+                    start_id = key_id_pair["id"]
                     
-                    # Parse the start ID to compare
-                    try:
-                        if "-" not in start_id:
-                            connection.sendall(b"-ERR Invalid ID format\r\n")
-                            continue
-                        start_time_str, start_seq_str = start_id.split("-")
-                        start_time = int(start_time_str)
-                        start_seq = int(start_seq_str)
-                    except (ValueError, IndexError):
-                        connection.sendall(b"-ERR Invalid ID format\r\n")
+                    if stream_key not in Database or Database[stream_key]["type"] != "stream":
+                        # Stream doesn't exist, skip it
                         continue
+                    
+                    entries = Database[stream_key]["entries"]
+                    start_time, start_seq = parse_entry_id(start_id, is_start=True)
                     
                     # XREAD is exclusive - get entries with ID > start_id
                     result_entries = []
@@ -500,20 +501,33 @@ def handle_client(connection):
                         if entry_greater:
                             result_entries.append(entry)
                     
-                    # Build RESP array response
-                    # Format: *1\r\n (1 stream)
-                    #         *2\r\n (stream has 2 elements: key and entries)
-                    #         $<key_len>\r\n<key>\r\n
-                    #         *<num_entries>\r\n
-                    #         For each entry: *2\r\n$<id_len>\r\n<id>\r\n*<num_fields*2>\r\n...
-                    response_parts = []
+                    # Only include streams that have matching entries
+                    if len(result_entries) > 0:
+                        streams_with_entries.append({
+                            "key": stream_key,
+                            "entries": result_entries
+                        })
+                
+                # Build RESP array response
+                # Format: *<num_streams>\r\n
+                #         For each stream:
+                #           *2\r\n (stream: [key, entries])
+                #           $<key_len>\r\n<key>\r\n
+                #           *<num_entries>\r\n
+                #           For each entry: *2\r\n$<id_len>\r\n<id>\r\n*<num_fields*2>\r\n...
+                response_parts = []
+                
+                if len(streams_with_entries) == 0:
+                    # No streams with entries, return empty array
+                    connection.sendall(b"*0\r\n")
+                else:
+                    # Outer array: number of streams
+                    response_parts.append(f"*{len(streams_with_entries)}\r\n")
                     
-                    if len(result_entries) == 0:
-                        # No entries found, return empty array
-                        connection.sendall(b"*0\r\n")
-                    else:
-                        # Return array with 1 stream
-                        response_parts.append("*1\r\n")
+                    # Process each stream
+                    for stream_data in streams_with_entries:
+                        stream_key = stream_data["key"]
+                        result_entries = stream_data["entries"]
                         
                         # Stream array: [key, entries]
                         response_parts.append("*2\r\n")
@@ -543,9 +557,10 @@ def handle_client(connection):
                             for field, value in fields.items():
                                 response_parts.append(f"${len(field)}\r\n{field}\r\n")
                                 response_parts.append(f"${len(value)}\r\n{value}\r\n")
-                        
-                        response = "".join(response_parts)
-                        connection.sendall(response.encode())
+                    
+                    # Send response once after processing all streams
+                    response = "".join(response_parts)
+                    connection.sendall(response.encode())
         elif command:
             print(f"Received unknown command: {command}, arguments: {arguments}")
     
