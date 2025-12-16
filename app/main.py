@@ -506,6 +506,8 @@ def handle_client(connection):
                 num_streams = (len(arguments) - streams_index - 1) // 2
                 key_id_pairs = []
                 for i in range(num_streams):
+                    if arguments[streams_index + 1 + num_streams + i] == "$":
+                        arguments[streams_index + 1 + num_streams + i] = "0-0"
                     key_id_pairs.append({
                         "key": arguments[streams_index + 1 + i],
                         "id": arguments[streams_index + 1 + num_streams + i]
