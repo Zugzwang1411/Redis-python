@@ -511,6 +511,47 @@ def handle_client(connection):
                         "id": arguments[streams_index + 1 + num_streams + i]
                     })
                 
+                # Resolve $ to actual max entry IDs before processing
+                resolved_key_id_pairs = []
+                for key_id_pair in key_id_pairs:
+                    stream_key = key_id_pair["key"]
+                    start_id = key_id_pair["id"]
+                    
+                    # Resolve $ to the maximum entry ID at this moment
+                    if start_id == "$":
+                        if stream_key not in Database or Database[stream_key]["type"] != "stream":
+                            # Stream doesn't exist, skip it
+                            continue
+                        
+                        entries = Database[stream_key]["entries"]
+                        if len(entries) == 0:
+                            # Empty stream, use 0-0 as the ID (will wait for any new entry)
+                            resolved_id = "0-0"
+                        else:
+                            # Find maximum entry ID
+                            max_time = -1
+                            max_seq = -1
+                            for entry in entries:
+                                entry_id = entry["id"]
+                                entry_time_str, entry_seq_str = entry_id.split("-")
+                                entry_time = int(entry_time_str)
+                                entry_seq = int(entry_seq_str)
+                                if entry_time > max_time or (entry_time == max_time and entry_seq > max_seq):
+                                    max_time = entry_time
+                                    max_seq = entry_seq
+                            resolved_id = f"{max_time}-{max_seq}"
+                        
+                        resolved_key_id_pairs.append({
+                            "key": stream_key,
+                            "id": resolved_id
+                        })
+                    else:
+                        # Keep original ID
+                        resolved_key_id_pairs.append(key_id_pair)
+                
+                # Use resolved IDs from now on
+                key_id_pairs = resolved_key_id_pairs
+                
                 # Helper function to get entries for streams
                 def get_entries_for_streams(key_id_pairs, Database):
                     streams_with_entries = []
@@ -523,33 +564,16 @@ def handle_client(connection):
                             continue
                         
                         entries = Database[stream_key]["entries"]
-
-                        if start_id == "$":
-                            if len(entries) == 0:
-                                continue
-
-                            max_time = -1
-                            max_seq = -1
-
-                            for entry in entries:
-                                entry_id = entry["id"]
-                                entry_time_str, entry_seq_str = entry_id.split("-")
-                                entry_time = int(entry_time_str)
-                                entry_seq = int(entry_seq_str)
-                                if entry_time > max_time or (entry_time == max_time and entry_seq > max_seq):
-                                    max_time = entry_time
-                                    max_seq = entry_seq
-                            
-                            start_time = max_time
-                            start_seq = max_seq
                         
-                        else:
-                            try:
-                                if "-" not in start_id:
-                                    continue
-                                start_time, start_seq = parse_entry_id(start_id, is_start=True)
-                            except (ValueError, IndexError):
+                        # Parse start ID (should be resolved now, no $)
+                        try:
+                            if "-" not in start_id:
                                 continue
+                            start_time_str, start_seq_str = start_id.split("-")
+                            start_time = int(start_time_str)
+                            start_seq = int(start_seq_str)
+                        except (ValueError, IndexError):
+                            continue
                         
                         # XREAD is exclusive - get entries with ID > start_id
                         result_entries = []
@@ -638,7 +662,12 @@ def handle_client(connection):
                             conditions.append((stream_key, stream_conditions[stream_key]))
                     
                     # Wait on conditions with timeout
-                    timeout_seconds = block_timeout / 1000.0
+                    # Handle block_timeout == 0 as infinite wait
+                    if block_timeout == 0:
+                        timeout_seconds = float('inf')  # Wait indefinitely
+                    else:
+                        timeout_seconds = block_timeout / 1000.0
+                    
                     start_time = time.time()
                     
                     # Use the first condition for waiting (or wait on all)
@@ -649,15 +678,21 @@ def handle_client(connection):
                             # Wait with timeout, checking for new entries when notified
                             while True:
                                 elapsed = time.time() - start_time
-                                remaining = timeout_seconds - elapsed
                                 
-                                if remaining <= 0 and timeout_seconds != 0:
-                                    # Timeout expired
-                                    connection.sendall(b"*-1\r\n")
-                                    break
+                                # Handle timeout (but 0 means infinite wait)
+                                if timeout_seconds != float('inf'):
+                                    remaining = timeout_seconds - elapsed
+                                    if remaining <= 0:
+                                        # Timeout expired
+                                        connection.sendall(b"*-1\r\n")
+                                        break
+                                    wait_time = min(remaining, 0.1)
+                                else:
+                                    # Infinite wait, check every 100ms
+                                    wait_time = 0.1
                                 
                                 # Wait with timeout (will be notified when XADD adds entry)
-                                condition.wait(min(remaining, 0.1))
+                                condition.wait(wait_time)
                                 
                                 # Check if new entries are available
                                 streams_with_entries = get_entries_for_streams(key_id_pairs, Database)
