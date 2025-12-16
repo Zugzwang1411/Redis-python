@@ -506,8 +506,6 @@ def handle_client(connection):
                 num_streams = (len(arguments) - streams_index - 1) // 2
                 key_id_pairs = []
                 for i in range(num_streams):
-                    if arguments[streams_index + 1 + num_streams + i] == "$":
-                        arguments[streams_index + 1 + num_streams + i] = "0-0"
                     key_id_pairs.append({
                         "key": arguments[streams_index + 1 + i],
                         "id": arguments[streams_index + 1 + num_streams + i]
@@ -525,16 +523,33 @@ def handle_client(connection):
                             continue
                         
                         entries = Database[stream_key]["entries"]
-                        
-                        # Parse start ID
-                        try:
-                            if "-" not in start_id:
+
+                        if start_id == "$":
+                            if len(entries) == 0:
                                 continue
-                            start_time_str, start_seq_str = start_id.split("-")
-                            start_time = int(start_time_str)
-                            start_seq = int(start_seq_str)
-                        except (ValueError, IndexError):
-                            continue
+
+                            max_time = -1
+                            max_seq = -1
+
+                            for entry in entries:
+                                entry_id = entry["id"]
+                                entry_time_str, entry_seq_str = entry_id.split("-")
+                                entry_time = int(entry_time_str)
+                                entry_seq = int(entry_seq_str)
+                                if entry_time > max_time or (entry_time == max_time and entry_seq > max_seq):
+                                    max_time = entry_time
+                                    max_seq = entry_seq
+                            
+                            start_time = max_time
+                            start_seq = max_seq
+                        
+                        else:
+                            try:
+                                if "-" not in start_id:
+                                    continue
+                                start_time, start_seq = parse_entry_id(start_id, is_start=True)
+                            except (ValueError, IndexError):
+                                continue
                         
                         # XREAD is exclusive - get entries with ID > start_id
                         result_entries = []
