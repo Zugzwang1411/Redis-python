@@ -770,7 +770,12 @@ def handle_client(connection):
                 
                 # Return the new value as integer RESP format
                 connection.sendall(f":{new_value}\r\n".encode())
-        
+
+        elif command == "MULTI":
+            if len(arguments) != 0:
+                connection.sendall(b"-ERR wrong number of arguments for 'multi' command\r\n".encode())
+            else:
+                connection.sendall(b"+OK\r\n".encode())
 
         elif command:
             print(f"Received unknown command: {command}, arguments: {arguments}")
