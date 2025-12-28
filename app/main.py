@@ -740,7 +740,7 @@ def handle_client(connection):
                 
                 if key not in Database:
                     Database[key] = {"type": "string", "value": "0", "expiry": None}
-                    new_value = 0
+                    new_value = 1
                 else:
                     entry = Database[key]
                     
