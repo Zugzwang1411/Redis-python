@@ -734,7 +734,7 @@ def handle_client(connection):
         
         elif command == "INCR":
             if len(arguments) != 1:
-                connection.sendall(b"-ERR wrong number of arguments for 'incr' command\r\n".encode())
+                connection.sendall(b"-ERR wrong number of arguments for 'incr' command\r\n")
             else:
                 key = arguments[0]
                 
@@ -775,7 +775,7 @@ def handle_client(connection):
             if len(arguments) != 0:
                 connection.sendall(b"-ERR wrong number of arguments for 'multi' command\r\n".encode())
             else:
-                connection.sendall(b"+OK\r\n".encode())
+                connection.sendall(b"+OK\r\n")
 
         elif command:
             print(f"Received unknown command: {command}, arguments: {arguments}")
