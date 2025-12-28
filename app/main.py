@@ -838,6 +838,16 @@ def handle_client(connection):
                 transaction_error = False
             continue
 
+        if command == "DISCARD":
+            if not in_transaction:
+                connection.sendall(b"-ERR DISCARD without MULTI\r\n")
+            else:
+                in_transaction = False
+                transaction_queue = []
+                transaction_error = False
+                connection.sendall(b"+OK\r\n")
+            continue
+
         if in_transaction:
             # Validate command during queuing; mark transaction as dirty on error
             temp_db = copy.deepcopy(Database)
