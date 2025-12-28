@@ -737,11 +737,39 @@ def handle_client(connection):
                 connection.sendall(b"-ERR wrong number of arguments for 'incr' command\r\n".encode())
             else:
                 key = arguments[0]
+                
                 if key not in Database:
                     Database[key] = {"type": "string", "value": "0", "expiry": None}
+                    new_value = 0
+                else:
+                    entry = Database[key]
+                    
+                    # Check if it's a string type
+                    if entry["type"] != "string":
+                        connection.sendall(b"-ERR WRONGTYPE Operation against a key holding the wrong kind of value\r\n")
+                        continue
+                    
+                    # Check expiry
+                    if entry.get("expiry") is not None and time.time() > entry["expiry"]:
+                        # Key expired, treat as if it doesn't exist
+                        del Database[key]
+                        Database[key] = {"type": "string", "value": "0", "expiry": None}
+                        new_value = 0
+                    else:
+                        # Key exists - try to convert value to integer
+                        try:
+                            current_value = int(entry["value"])
+                            new_value = current_value + 1
+                        except ValueError:
+                            # Value cannot be converted to integer (e.g., "xyz")
+                            connection.sendall(b"-ERR value is not an integer or out of range\r\n")
+                            continue
                 
-                Database[key]["value"] = str(int(Database[key]["value"]) + 1)
-                connection.sendall(f":{Database[key]['value']}\r\n".encode())
+                # Store the new value as a string
+                Database[key]["value"] = str(new_value)
+                
+                # Return the new value as integer RESP format
+                connection.sendall(f":{new_value}\r\n".encode())
         
 
         elif command:
