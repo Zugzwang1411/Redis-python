@@ -731,6 +731,19 @@ def handle_client(connection):
                     else:
                         # No valid streams, return null
                         connection.sendall(b"*-1\r\n")
+        
+        elif command == "INCR":
+            if len(arguments) != 1:
+                connection.sendall(b"-ERR wrong number of arguments for 'incr' command\r\n")
+            else:
+                key = arguments[0]
+                if key not in Database:
+                    Database[key] = {"type": "string", "value": 0, "expiry": None}
+                
+                Database[key]["value"] += 1
+                connection.sendall(f":{Database[key]['value']}\r\n")
+        
+
         elif command:
             print(f"Received unknown command: {command}, arguments: {arguments}")
     
