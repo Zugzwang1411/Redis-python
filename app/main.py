@@ -734,14 +734,14 @@ def handle_client(connection):
         
         elif command == "INCR":
             if len(arguments) != 1:
-                connection.sendall(b"-ERR wrong number of arguments for 'incr' command\r\n")
+                connection.sendall(b"-ERR wrong number of arguments for 'incr' command\r\n".encode())
             else:
                 key = arguments[0]
                 if key not in Database:
-                    Database[key] = {"type": "string", "value": 0, "expiry": None}
+                    Database[key] = {"type": "string", "value": "0", "expiry": None}
                 
-                Database[key]["value"] += 1
-                connection.sendall(f":{Database[key]['value']}\r\n")
+                Database[key]["value"] = str(int(Database[key]["value"]) + 1)
+                connection.sendall(f":{Database[key]['value']}\r\n".encode())
         
 
         elif command:
