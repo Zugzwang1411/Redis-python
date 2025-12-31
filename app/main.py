@@ -189,6 +189,48 @@ class BufferConnection:
         return b"".join(self.chunks)
 
 
+def validate_command_syntax(command, arguments):
+    """Validate command syntax (argument count, command existence) without executing."""
+    # Define expected argument counts for commands
+    command_arg_counts = {
+        "PING": (0,),
+        "ECHO": (1,),
+        "SET": (2, 4),  # SET key value or SET key value EX/PX time
+        "GET": (1,),
+        "INCR": (1,),
+        "TYPE": (1,),
+        "XADD": None,  # Variable: at least 4, must be even (key, id, field-value pairs)
+        "XRANGE": (3,),
+        "XREAD": None,  # Variable: complex parsing needed
+        "MULTI": (0,),
+        "EXEC": (0,),
+        "DISCARD": (0,),
+    }
+    
+    if command not in command_arg_counts:
+        return False, b"-ERR unknown command\r\n"
+    
+    expected_counts = command_arg_counts[command]
+    
+    if expected_counts is None:
+        # Variable argument commands - do basic checks
+        if command == "XADD":
+            if len(arguments) < 4 or len(arguments) % 2 != 0:
+                return False, b"-ERR wrong number of arguments for 'xadd' command\r\n"
+        elif command == "XREAD":
+            # XREAD has complex syntax, minimal check: at least 3 args (BLOCK timeout STREAMS...)
+            if len(arguments) < 1:
+                return False, b"-ERR wrong number of arguments for 'xread' command\r\n"
+        return True, None
+    else:
+        # Fixed argument count commands
+        if len(arguments) not in expected_counts:
+            cmd_name = command.lower()
+            return False, f"-ERR wrong number of arguments for '{cmd_name}' command\r\n".encode()
+    
+    return True, None
+
+
 def execute_single_command(connection, command, arguments, Database, stream_last_ids):
     """Execute a single command against Database, writing responses to the provided connection."""
     if command == "PING":
@@ -819,14 +861,19 @@ def handle_client(connection):
                 connection.sendall(b"-ERR EXEC without MULTI\r\n")
             else:
                 if transaction_error:
+                    # Syntax error occurred during queuing - abort transaction
                     connection.sendall(b"-EXECABORT Transaction discarded because of previous errors.\r\n")
                 else:
+                    # Execute all queued commands, capturing both success and error responses
                     responses = []
                     for queued_command, queued_arguments in transaction_queue:
                         buffer_conn = BufferConnection()
                         execute_single_command(buffer_conn, queued_command, queued_arguments, Database, stream_last_ids)
-                        responses.append(buffer_conn.get_response())
+                        response = buffer_conn.get_response()
+                        # Include all responses (both success and error) in the array
+                        responses.append(response)
 
+                    # Build RESP array response: *N\r\n<response1><response2>...
                     resp_parts = [f"*{len(responses)}\r\n".encode()]
                     for resp in responses:
                         resp_parts.append(resp)
@@ -849,16 +896,14 @@ def handle_client(connection):
             continue
 
         if in_transaction:
-            # Validate command during queuing; mark transaction as dirty on error
-            temp_db = copy.deepcopy(Database)
-            temp_stream_ids = copy.deepcopy(stream_last_ids)
-            buffer_conn = BufferConnection()
-            execute_single_command(buffer_conn, command, arguments, temp_db, temp_stream_ids)
-            resp = buffer_conn.get_response()
-            if resp.startswith(b"-ERR"):
+            # Validate only syntax during queuing; runtime errors will be caught during EXEC
+            is_valid, syntax_error = validate_command_syntax(command, arguments)
+            if not is_valid:
+                # Syntax error - abort transaction
                 transaction_error = True
-                connection.sendall(resp)
+                connection.sendall(syntax_error)
             else:
+                # Syntax OK - queue the command (even if it might fail at runtime)
                 transaction_queue.append((command, arguments))
                 connection.sendall(b"+QUEUED\r\n")
             continue
