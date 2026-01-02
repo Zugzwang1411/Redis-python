@@ -2,6 +2,7 @@ import socket
 import threading
 import time
 import copy
+import sys
 
 # Global dictionary to store Condition objects for each stream (for blocking XREAD)
 stream_conditions = {}
@@ -918,8 +919,19 @@ def main():
     # You can use print statements as follows for debugging, they'll be visible when running tests.
     print("Logs from your program will appear here!")
 
+    port = 6379
+    args = sys.argv[1:]
+
+    if '--port' in args:
+        port_index = args.index('--port')
+        try:
+            port = int(args[port_index + 1])
+        except (ValueError, IndexError):
+            print("Invalid port number. Using default port 6379.")
+            sys.exit(1)
+
     # Uncomment the code below to pass the first stage
-    server_socket = socket.create_server(("localhost", 6379), reuse_port=True)
+    server_socket = socket.create_server(("localhost", port), reuse_port=True)
     
     while True:
         connection, _ = server_socket.accept()
