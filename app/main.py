@@ -966,19 +966,17 @@ def main():
     if '--replicaof' in args:
         replicaof_index = args.index('--replicaof')
         try:
+            if replicaof_index + 1 >= len(args):
+                print("Invalid --replicaof format. Expected: --replicaof \"<HOST> <PORT>\"")
+                sys.exit(1)
+            
             replicaof_value = args[replicaof_index + 1]
-            # Handle quoted string: "<HOST> <PORT>" or '<HOST> <PORT>'
-            # Strip quotes (both single and double) if present
-            if (replicaof_value.startswith('"') and replicaof_value.endswith('"')) or \
-               (replicaof_value.startswith("'") and replicaof_value.endswith("'")):
-                # Remove quotes and split
-                replicaof_value = replicaof_value.strip('"').strip("'")
-                parts = replicaof_value.split()
-            else:
-                # Try as two separate arguments
-                parts = [replicaof_value]
-                if replicaof_index + 2 < len(args):
-                    parts.append(args[replicaof_index + 2])
+            
+            # Remove any quotes (handling partial quotes from shell splitting)
+            replicaof_value = replicaof_value.strip('"').strip("'")
+            
+            # Try to split by space first (handles "localhost 6379" as one argument)
+            parts = replicaof_value.split()
             
             if len(parts) >= 2:
                 master_host = parts[0]
