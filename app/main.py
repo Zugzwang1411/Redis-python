@@ -826,9 +826,12 @@ def execute_single_command(connection, command, arguments, Database, stream_last
         #if server is master that is running on port 6379 then return role as  master else return role as slave
         server_port = connection.getsockname()[1]
         if server_port == 6379:
-            connection.sendall(b"+role:master\r\n")
+            role_text = "role:master"
         else:
-            connection.sendall(b"+role:slave\r\n" + f"master_port:{server_port}\r\n")
+            role_text = "role:slave"
+        
+        response = f"*{len(role_text)}\r\n{role_text}\r\n"
+        connection.sendall(response.encode())
 
     else:
         connection.sendall(b"-ERR unknown command\r\n")
