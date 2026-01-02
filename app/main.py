@@ -826,11 +826,13 @@ def execute_single_command(connection, command, arguments, Database, stream_last
         #if server is master that is running on port 6379 then return role as  master else return role as slave
         server_port = connection.getsockname()[1]
         if server_port == 6379:
-            role_text = "role:master"
+            # Master response with role, master_replid, and master_repl_offset
+            info_text = "role:master\r\nmaster_replid:8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb\r\nmaster_repl_offset:0"
         else:
-            role_text = "role:slave"
+            info_text = "role:slave"
         
-        response = f"${len(role_text)}\r\n{role_text}\r\n"
+        # Return as bulk string: $<length>\r\n<data>\r\n
+        response = f"${len(info_text)}\r\n{info_text}\r\n"
         connection.sendall(response.encode())
 
     else:
