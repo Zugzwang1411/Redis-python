@@ -828,7 +828,7 @@ def execute_single_command(connection, command, arguments, Database, stream_last
         if server_port == 6379:
             role_text = "role:master"
         else:
-            role_text = "+role:slave"
+            role_text = "role:slave"
         
         response = f"${len(role_text)}\r\n{role_text}\r\n"
         connection.sendall(response.encode())
