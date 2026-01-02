@@ -928,12 +928,31 @@ def handle_client(connection):
     connection.close()
 
 
+def connect_to_master_and_ping(master_host, master_port):
+    """Connect to master server and send PING command as RESP array."""
+    try:
+        # Create client socket
+        master_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        # Connect to master
+        master_socket.connect((master_host, master_port))
+        # Send PING as RESP array: *1\r\n$4\r\nPING\r\n
+        ping_command = b"*1\r\n$4\r\nPING\r\n"
+        master_socket.sendall(ping_command)
+        # Keep connection open for future REPLCONF and PSYNC stages
+        return master_socket
+    except Exception as e:
+        print(f"Error connecting to master: {e}")
+        return None
+
+
 def main():
     # You can use print statements as follows for debugging, they'll be visible when running tests.
     print("Logs from your program will appear here!")
 
     port = 6379
     args = sys.argv[1:]
+    master_host = None
+    master_port = None
 
     if '--port' in args:
         port_index = args.index('--port')
@@ -942,6 +961,38 @@ def main():
         except (ValueError, IndexError):
             print("Invalid port number. Using default port 6379.")
             sys.exit(1)
+
+    # Parse --replicaof flag
+    if '--replicaof' in args:
+        replicaof_index = args.index('--replicaof')
+        try:
+            replicaof_value = args[replicaof_index + 1]
+            # Handle quoted string: "<HOST> <PORT>" or '<HOST> <PORT>'
+            # Strip quotes (both single and double) if present
+            if (replicaof_value.startswith('"') and replicaof_value.endswith('"')) or \
+               (replicaof_value.startswith("'") and replicaof_value.endswith("'")):
+                # Remove quotes and split
+                replicaof_value = replicaof_value.strip('"').strip("'")
+                parts = replicaof_value.split()
+            else:
+                # Try as two separate arguments
+                parts = [replicaof_value]
+                if replicaof_index + 2 < len(args):
+                    parts.append(args[replicaof_index + 2])
+            
+            if len(parts) >= 2:
+                master_host = parts[0]
+                master_port = int(parts[1])
+            else:
+                print("Invalid --replicaof format. Expected: --replicaof \"<HOST> <PORT>\"")
+                sys.exit(1)
+        except (ValueError, IndexError) as e:
+            print(f"Invalid --replicaof argument: {e}")
+            sys.exit(1)
+
+    # If replica mode, connect to master and send PING
+    if master_host and master_port:
+        connect_to_master_and_ping(master_host, master_port)
 
     # Uncomment the code below to pass the first stage
     server_socket = socket.create_server(("localhost", port), reuse_port=True)
