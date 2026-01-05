@@ -839,19 +839,13 @@ def execute_single_command(connection, command, arguments, Database, stream_last
         if len(arguments) != 2:
             connection.sendall(b"-ERR wrong number of arguments for 'replconf' command\r\n")
         else:
-            key = arguments[0]
-            value = arguments[1]
-            if key == "listening-port":
-                connection.sendall(b"+OK\r\n")
-            else:
-                connection.sendall(b"-ERR unknown command\r\n")
+            connection.sendall(b"+OK\r\n")
 
     elif command == "PSYNC":
         if len(arguments) != 2:
             connection.sendall(b"-ERR wrong number of arguments for 'psync' command\r\n")
         else:
             repl_id = "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb"
-            
             response = f"+FULLRESYNC {repl_id} 0\r\n"
             connection.sendall(response.encode())
 
