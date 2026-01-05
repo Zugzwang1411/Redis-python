@@ -835,6 +835,17 @@ def execute_single_command(connection, command, arguments, Database, stream_last
         response = f"${len(info_text)}\r\n{info_text}\r\n"
         connection.sendall(response.encode())
 
+    elif command == "REPLCONF":
+        if len(arguments) != 2:
+            connection.sendall(b"-ERR wrong number of arguments for 'replconf' command\r\n")
+        else:
+            key = arguments[0]
+            value = arguments[1]
+            if key == "listening-port":
+                connection.sendall(b"+OK\r\n")
+            else:
+                connection.sendall(b"-ERR unknown command\r\n")
+
     else:
         connection.sendall(b"-ERR unknown command\r\n")
 
@@ -928,17 +939,39 @@ def handle_client(connection):
     connection.close()
 
 
-def connect_to_master_and_ping(master_host, master_port):
-    """Connect to master server and send PING command as RESP array."""
+def connect_to_master_and_ping(master_host, master_port, replica_port):
+    """Connect to master server and send PING, then REPLCONF commands as RESP arrays."""
     try:
         # Create client socket
         master_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         # Connect to master
         master_socket.connect((master_host, master_port))
-        # Send PING as RESP array: *1\r\n$4\r\nPING\r\n
+        
+        # Step 1: Send PING command as RESP array: *1\r\n$4\r\nPING\r\n
         ping_command = b"*1\r\n$4\r\nPING\r\n"
         master_socket.sendall(ping_command)
-        # Keep connection open for future REPLCONF and PSYNC stages
+        
+        # Read PING response (+PONG\r\n)
+        response = master_socket.recv(1024)
+        
+        # Step 2: Send REPLCONF listening-port <PORT>
+        # Format: *3\r\n$8\r\nREPLCONF\r\n$14\r\nlistening-port\r\n$<port_len>\r\n<port>\r\n
+        port_str = str(replica_port)
+        replconf_listening_port = f"*3\r\n$8\r\nREPLCONF\r\n$14\r\nlistening-port\r\n${len(port_str)}\r\n{port_str}\r\n"
+        master_socket.sendall(replconf_listening_port.encode())
+        
+        # Read REPLCONF listening-port response (+OK\r\n)
+        response = master_socket.recv(1024)
+        
+        # Step 3: Send REPLCONF capa psync2
+        # Format: *3\r\n$8\r\nREPLCONF\r\n$4\r\ncapa\r\n$6\r\npsync2\r\n
+        replconf_capa = b"*3\r\n$8\r\nREPLCONF\r\n$4\r\ncapa\r\n$6\r\npsync2\r\n"
+        master_socket.sendall(replconf_capa)
+        
+        # Read REPLCONF capa response (+OK\r\n)
+        response = master_socket.recv(1024)
+        
+        # Keep connection open for future PSYNC stage
         return master_socket
     except Exception as e:
         print(f"Error connecting to master: {e}")
@@ -988,9 +1021,9 @@ def main():
             print(f"Invalid --replicaof argument: {e}")
             sys.exit(1)
 
-    # If replica mode, connect to master and send PING
+    # If replica mode, connect to master and send PING, then REPLCONF commands
     if master_host and master_port:
-        connect_to_master_and_ping(master_host, master_port)
+        connect_to_master_and_ping(master_host, master_port, port)
 
     # Uncomment the code below to pass the first stage
     server_socket = socket.create_server(("localhost", port), reuse_port=True)
