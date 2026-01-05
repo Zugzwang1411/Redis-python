@@ -846,6 +846,15 @@ def execute_single_command(connection, command, arguments, Database, stream_last
             else:
                 connection.sendall(b"-ERR unknown command\r\n")
 
+    elif command == "PSYNC":
+        if len(arguments) != 2:
+            connection.sendall(b"-ERR wrong number of arguments for 'psync' command\r\n")
+        else:
+            #connection should respond with a simle string that looks ike this:- +FULLRESYNC <REPL_ID> 0\r\n
+            repl_id = "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb"
+            response = f"+FULLRESYNC {repl_id} 0\r\n"
+            connection.sendall(response.encode())
+
     else:
         connection.sendall(b"-ERR unknown command\r\n")
 
@@ -969,6 +978,14 @@ def connect_to_master_and_ping(master_host, master_port, replica_port):
         master_socket.sendall(replconf_capa)
         
         # Read REPLCONF capa response (+OK\r\n)
+        response = master_socket.recv(1024)
+
+        # Step 4: Send PSYNC 0
+        # Format: *2\r\n$5\r\nPSYNC\r\n$1\r\n0\r\n
+        psync_0 = b"*3\r\n$5\r\nPSYNC\r\n$1\r\n?\r\n$2\r\n-1\r\n"
+        master_socket.sendall(psync_0)
+        
+        # Read PSYNC 0 response (+FULLRESYNC\r\n)
         response = master_socket.recv(1024)
         
         # Keep connection open for future PSYNC stage
