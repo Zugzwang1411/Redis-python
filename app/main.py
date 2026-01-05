@@ -850,8 +850,8 @@ def execute_single_command(connection, command, arguments, Database, stream_last
         if len(arguments) != 2:
             connection.sendall(b"-ERR wrong number of arguments for 'psync' command\r\n")
         else:
-            #connection should respond with a simle string that looks ike this:- +FULLRESYNC <REPL_ID> 0\r\n
             repl_id = "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb"
+            
             response = f"+FULLRESYNC {repl_id} 0\r\n"
             connection.sendall(response.encode())
 
