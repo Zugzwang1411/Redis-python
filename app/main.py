@@ -17,6 +17,11 @@ global_database_lock = threading.Lock()
 EMPTY_RDB_BASE64 = "UkVESVMwMDEx+glyZWRpcy12ZXIFNy4yLjD6CnJlZGlzLWJpdHPAQPoFY3RpbWXCbQi8ZfoIdXNlZC1tZW3CsMQQAPoIYW9mLWJhc2XAAP/wbjv+wP9aog=="
 EMPTY_RDB_BINARY = base64.b64decode(EMPTY_RDB_BASE64)
 
+# Global set to track replica connections (connections from replicas)
+# These are the connections that replicas use to connect to the master
+replica_connections = set()
+replica_connections_lock = threading.Lock()
+
 
 def parse_resp(data, pos=0):
     """
@@ -237,6 +242,96 @@ def validate_command_syntax(command, arguments):
     return True, None
 
 
+def encode_command_as_resp(command, arguments):
+    """
+    Encode a command and its arguments as a RESP array.
+    
+    Args:
+        command: The command name (e.g., "SET")
+        arguments: List of command arguments (e.g., ["foo", "bar"])
+    
+    Returns:
+        bytes: The command encoded as a RESP array
+        Example: *3\r\n$3\r\nSET\r\n$3\r\nfoo\r\n$3\r\nbar\r\n
+    """
+    # RESP array format: *<number_of_elements>\r\n<element1><element2>...
+    # Each element is a bulk string: $<length>\r\n<data>\r\n
+    
+    # Convert command to string if it's bytes
+    if isinstance(command, bytes):
+        command_str = command.decode('utf-8')
+    else:
+        command_str = str(command)
+    
+    # Total number of elements: command + arguments
+    num_elements = 1 + len(arguments)
+    resp_parts = [f"*{num_elements}\r\n".encode('utf-8')]
+    
+    # Add command as bulk string
+    command_bytes = command_str.encode('utf-8')
+    resp_parts.append(f"${len(command_bytes)}\r\n".encode('utf-8'))
+    resp_parts.append(command_bytes)
+    resp_parts.append(b"\r\n")
+    
+    # Add each argument as bulk string
+    for arg in arguments:
+        # Convert argument to string if it's bytes
+        if isinstance(arg, bytes):
+            arg_str = arg.decode('utf-8')
+        else:
+            arg_str = str(arg)
+        arg_bytes = arg_str.encode('utf-8')
+        resp_parts.append(f"${len(arg_bytes)}\r\n".encode('utf-8'))
+        resp_parts.append(arg_bytes)
+        resp_parts.append(b"\r\n")
+    
+    return b"".join(resp_parts)
+
+
+def is_replica_connection(connection):
+    """
+    Check if a connection is a replica connection.
+    
+    Args:
+        connection: The socket connection to check
+    
+    Returns:
+        bool: True if the connection is from a replica, False otherwise
+    """
+    with replica_connections_lock:
+        return connection in replica_connections
+
+
+def propagate_command_to_replicas(command, arguments):
+    """
+    Propagate a write command to all connected replicas.
+    
+    This function sends the command as a RESP array to all replica connections.
+    Replicas process these commands silently (they don't send responses back).
+    
+    Args:
+        command: The command name (e.g., "SET")
+        arguments: List of command arguments (e.g., ["foo", "bar"])
+    """
+    # Encode the command as a RESP array
+    resp_command = encode_command_as_resp(command, arguments)
+    
+    # Send to all replica connections
+    with replica_connections_lock:
+        # Create a copy of the set to avoid modification during iteration
+        replicas = list(replica_connections)
+    
+    for replica_conn in replicas:
+        try:
+            # Send command without waiting for response
+            # Replicas process commands silently and don't send responses
+            replica_conn.sendall(resp_command)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            # Replica connection is broken, remove it from the set
+            with replica_connections_lock:
+                replica_connections.discard(replica_conn)
+
+
 def execute_single_command(connection, command, arguments, Database, stream_last_ids):
     """Execute a single command against Database, writing responses to the provided connection."""
     if command == "PING":
@@ -259,6 +354,11 @@ def execute_single_command(connection, command, arguments, Database, stream_last
             value = arguments[1]
             Database[key] = {"type": "string", "value": value, "expiry": None}
             connection.sendall(b"+OK\r\n")
+            
+            # Propagate SET command to replicas (only if this is not a replica connection)
+            # Replicas send commands to master, but we don't propagate those back
+            if not is_replica_connection(connection):
+                propagate_command_to_replicas(command, arguments)
         elif len(arguments) == 4:
             # SET key value EX seconds or SET key value PX milliseconds
             key = arguments[0]
@@ -275,11 +375,19 @@ def execute_single_command(connection, command, arguments, Database, stream_last
                 expiry_timestamp = time.time() + expiry_time
                 Database[key] = {"type": "string", "value": value, "expiry": expiry_timestamp}
                 connection.sendall(b"+OK\r\n")
+                
+                # Propagate SET command to replicas
+                if not is_replica_connection(connection):
+                    propagate_command_to_replicas(command, arguments)
             elif expiry_type == "PX":
                 # Expiry in milliseconds
                 expiry_timestamp = time.time() + (expiry_time / 1000.0)
                 Database[key] = {"type": "string", "value": value, "expiry": expiry_timestamp}
                 connection.sendall(b"+OK\r\n")
+                
+                # Propagate SET command to replicas
+                if not is_replica_connection(connection):
+                    propagate_command_to_replicas(command, arguments)
             else:
                 connection.sendall(b"-ERR syntax error\r\n")
         else:
@@ -429,6 +537,13 @@ def execute_single_command(connection, command, arguments, Database, stream_last
                 # Return entry ID as bulk string
                 response = f"${len(entry_id)}\r\n{entry_id}\r\n"
                 connection.sendall(response.encode())
+                
+                # Propagate XADD command to replicas (only if this is not a replica connection)
+                # Note: We propagate with the final entry_id (not the original input with *)
+                if not is_replica_connection(connection):
+                    # Create arguments with the final entry_id for propagation
+                    xadd_args = [stream_key, entry_id] + arguments[2:]
+                    propagate_command_to_replicas(command, xadd_args)
 
     elif command == "TYPE":
         if len(arguments) != 1:
@@ -826,6 +941,10 @@ def execute_single_command(connection, command, arguments, Database, stream_last
 
             # Return the new value as integer RESP format
             connection.sendall(f":{new_value}\r\n".encode())
+            
+            # Propagate INCR command to replicas (only if this is not a replica connection)
+            if not is_replica_connection(connection):
+                propagate_command_to_replicas(command, arguments)
 
     elif command == "INFO":
         #if server is master that is running on port 6379 then return role as  master else return role as slave
@@ -859,6 +978,11 @@ def execute_single_command(connection, command, arguments, Database, stream_last
             rdb_length = len(EMPTY_RDB_BINARY)
             rdb_header = f"${rdb_length}\r\n".encode()
             connection.sendall(rdb_header + EMPTY_RDB_BINARY)
+            
+            # Mark this connection as a replica connection
+            # After the handshake is complete, this connection will receive propagated commands
+            with replica_connections_lock:
+                replica_connections.add(connection)
 
     else:
         connection.sendall(b"-ERR unknown command\r\n")
