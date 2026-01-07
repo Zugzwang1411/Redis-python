@@ -3,6 +3,7 @@ import threading
 import time
 import copy
 import sys
+import base64
 
 # Global dictionary to store Condition objects for each stream (for blocking XREAD)
 stream_conditions = {}
@@ -11,6 +12,10 @@ stream_conditions_lock = threading.Lock()
 # Global database shared across all client threads
 global_database = {}
 global_database_lock = threading.Lock()
+
+# Empty RDB file (base64 encoded)
+EMPTY_RDB_BASE64 = "UkVESVMwMDEx+glyZWRpcy12ZXIFNy4yLjD6CnJlZGlzLWJpdHPAQPoFY3RpbWXCbQi8ZfoIdXNlZC1tZW3CsMQQAPoIYW9mLWJhc2XAAP/wbjv+wP9aog=="
+EMPTY_RDB_BINARY = base64.b64decode(EMPTY_RDB_BASE64)
 
 
 def parse_resp(data, pos=0):
@@ -848,6 +853,12 @@ def execute_single_command(connection, command, arguments, Database, stream_last
             repl_id = "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb"
             response = f"+FULLRESYNC {repl_id} 0\r\n"
             connection.sendall(response.encode())
+            
+            # Send empty RDB file: $<length>\r\n<binary_contents>
+            # Note: This is NOT a RESP bulk string - no trailing \r\n
+            rdb_length = len(EMPTY_RDB_BINARY)
+            rdb_header = f"${rdb_length}\r\n".encode()
+            connection.sendall(rdb_header + EMPTY_RDB_BINARY)
 
     else:
         connection.sendall(b"-ERR unknown command\r\n")
