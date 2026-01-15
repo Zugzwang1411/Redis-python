@@ -1216,7 +1216,7 @@ def connect_to_master_and_ping(master_host, master_port, replica_port):
         while b"\r\n" not in response_buffer:
             chunk = master_socket.recv(1024)
             if not chunk:
-                return None
+                return None, b""
             response_buffer += chunk
         
         # Find the end of PSYNC response
@@ -1224,27 +1224,21 @@ def connect_to_master_and_ping(master_host, master_port, replica_port):
         # Any remaining data after PSYNC response is the RDB file header
         remaining_after_psync = response_buffer[psync_end:]
         
-        # Store remaining data as an attribute on the socket for read_rdb_file to use
-        master_socket._rdb_buffer = remaining_after_psync
-        
-        # Keep connection open for future PSYNC stage
-        return master_socket
+        # Return both socket and remaining buffer
+        return master_socket, remaining_after_psync
     except Exception as e:
         print(f"Error connecting to master: {e}")
-        return None
+        return None, b""
 
 
-def read_rdb_file(master_socket):
+def read_rdb_file(master_socket, initial_buffer=b""):
     """
     Read the RDB file from master after PSYNC response.
     Format: $<length>\r\n<binary_data> (no trailing \r\n after binary data)
     Returns: (success: bool, remaining_buffer: bytes)
     """
-    # Check if there's already data from PSYNC response read
-    buffer = getattr(master_socket, '_rdb_buffer', b"")
-    # Clear the attribute
-    if hasattr(master_socket, '_rdb_buffer'):
-        delattr(master_socket, '_rdb_buffer')
+    # Use provided initial buffer (may contain RDB header from PSYNC response)
+    buffer = initial_buffer
     
     # Read until we get the $ character
     while b"$" not in buffer:
@@ -1291,7 +1285,7 @@ def read_rdb_file(master_socket):
     return True, remaining
 
 
-def handle_master_commands(master_socket):
+def handle_master_commands(master_socket, initial_rdb_buffer=b""):
     """
     Continuously read and process commands from the master.
     Commands are processed without sending responses back.
@@ -1302,7 +1296,7 @@ def handle_master_commands(master_socket):
     
     # First, read the RDB file
     try:
-        success, remaining = read_rdb_file(master_socket)
+        success, remaining = read_rdb_file(master_socket, initial_rdb_buffer)
         if not success:
             return
         buffer = remaining
@@ -1397,10 +1391,10 @@ def main():
 
     # If replica mode, connect to master and send PING, then REPLCONF commands
     if master_host and master_port:
-        master_socket = connect_to_master_and_ping(master_host, master_port, port)
+        master_socket, rdb_buffer = connect_to_master_and_ping(master_host, master_port, port)
         if master_socket:
             # Start a thread to handle commands from master
-            master_thread = threading.Thread(target=handle_master_commands, args=(master_socket,))
+            master_thread = threading.Thread(target=handle_master_commands, args=(master_socket, rdb_buffer))
             master_thread.daemon = True
             master_thread.start()
 
