@@ -1087,9 +1087,9 @@ def execute_command_for_replica(connection, command, arguments, Database, stream
         if len(arguments) != 2:
             return
         else:
-            #we need to send the response to the replica REPLCONF ACK <offset> with offset as 0
-            response = f"+REPLCONF ACK 0\r\n"
-            connection.sendall(response.encode())
+            if arguments[0].upper() == "GETACK":
+                response = b"*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$1\r\n0\r\n"
+                connection.sendall(response)
 
 def handle_client(connection):
     """Handle a single client connection - can receive multiple commands"""
