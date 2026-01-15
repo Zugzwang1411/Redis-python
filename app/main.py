@@ -994,11 +994,16 @@ def execute_command_for_replica(connection, command, arguments, Database, stream
     Exception: REPLCONF GETACK * should send a response.
     """
     # Handle REPLCONF GETACK - this is the only command that gets a response after handshake
-    if command == "REPLCONF" and len(arguments) == 2 and arguments[0].upper() == "GETACK" and arguments[1] == "*":
-        # Send REPLCONF ACK 0 as RESP array: *3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$1\r\n0\r\n
-        response = b"*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$1\r\n0\r\n"
-        connection.sendall(response)
-        return
+    if command == "REPLCONF" and len(arguments) == 2:
+        # Convert arguments to strings and uppercase for comparison
+        arg0_str = str(arguments[0]).upper()
+        arg1_str = str(arguments[1])
+        
+        if arg0_str == "GETACK" and arg1_str == "*":
+            # Send REPLCONF ACK 0 as RESP array: *3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$1\r\n0\r\n
+            response = b"*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$1\r\n0\r\n"
+            connection.sendall(response)
+            return
     
     # All other commands are processed silently (no response)
     if command == "SET":
