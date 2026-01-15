@@ -991,7 +991,16 @@ def execute_command_for_replica(connection, command, arguments, Database, stream
     """
     Execute a command without sending a response back.
     This is used for processing propagated commands from the master.
+    Exception: REPLCONF GETACK * should send a response.
     """
+    # Handle REPLCONF GETACK - this is the only command that gets a response after handshake
+    if command == "REPLCONF" and len(arguments) == 2 and arguments[0].upper() == "GETACK" and arguments[1] == "*":
+        # Send REPLCONF ACK 0 as RESP array: *3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$1\r\n0\r\n
+        response = b"*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$1\r\n0\r\n"
+        connection.sendall(response)
+        return
+    
+    # All other commands are processed silently (no response)
     if command == "SET":
         if len(arguments) >= 2:
             key = arguments[0]
@@ -1082,24 +1091,6 @@ def execute_command_for_replica(connection, command, arguments, Database, stream
             
             # Store the new value as a string
             Database[key]["value"] = str(new_value)
-
-    elif command == "REPLCONF":
-        if len(arguments) < 2:
-            return
-        
-        # Get first argument, handling both string and bytes
-        first_arg = arguments[0]
-        if isinstance(first_arg, bytes):
-            first_arg = first_arg.decode('utf-8')
-        elif not isinstance(first_arg, str):
-            first_arg = str(first_arg)
-        
-        # Check if this is a GETACK command (case-insensitive)
-        if first_arg.upper() == "GETACK":
-            # Respond with REPLCONF ACK <offset> as RESP array
-            # Format: *3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$1\r\n0\r\n
-            response = b"*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$1\r\n0\r\n"
-            connection.sendall(response)
     
 
 def handle_client(connection):
