@@ -1084,12 +1084,29 @@ def execute_command_for_replica(connection, command, arguments, Database, stream
             Database[key]["value"] = str(new_value)
 
     elif command == "REPLCONF":
-        if len(arguments) != 2:
+        if len(arguments) < 2:
             return
         else:
             if arguments[0].upper() == "GETACK":
                 response = b"*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$1\r\n0\r\n"
                 connection.sendall(response)
+
+    # Get first argument, handling both string and bytes
+        first_arg = arguments[0]
+        if isinstance(first_arg, bytes):
+          first_arg = first_arg.decode('utf-8')
+        elif not isinstance(first_arg, str):
+            first_arg = str(first_arg)
+        if first_arg.upper() == "GETACK":
+            # Respond with REPLCONF ACK <offset> as RESP array
+            # Format: *3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$1\r\n0\r\n
+            response = b"*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$1\r\n0\r\n"
+            try:
+                connection.sendall(response)
+            except Exception as e:
+                print(f"Error sending REPLCONF ACK: {e}")
+                return
+    
 
 def handle_client(connection):
     """Handle a single client connection - can receive multiple commands"""
