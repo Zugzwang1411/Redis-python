@@ -987,6 +987,102 @@ def execute_single_command(connection, command, arguments, Database, stream_last
     else:
         connection.sendall(b"-ERR unknown command\r\n")
 
+def execute_command_without_response(connection, command, arguments, Database, stream_last_ids):
+    """
+    Execute a command without sending a response back.
+    This is used for processing propagated commands from the master.
+    """
+    if command == "SET":
+        if len(arguments) >= 2:
+            key = arguments[0]
+            value = arguments[1]
+            if len(arguments) == 2:
+                # SET key value (no expiry)
+                Database[key] = {"type": "string", "value": value, "expiry": None}
+            elif len(arguments) == 4:
+                # SET key value EX seconds or SET key value PX milliseconds
+                expiry_type = arguments[2].upper()
+                try:
+                    expiry_time = int(arguments[3])
+                    if expiry_type == "EX":
+                        # Expiry in seconds
+                        expiry_timestamp = time.time() + expiry_time
+                        Database[key] = {"type": "string", "value": value, "expiry": expiry_timestamp}
+                    elif expiry_type == "PX":
+                        # Expiry in milliseconds
+                        expiry_timestamp = time.time() + (expiry_time / 1000.0)
+                        Database[key] = {"type": "string", "value": value, "expiry": expiry_timestamp}
+                except ValueError:
+                    pass  # Ignore errors for propagated commands
+    
+    elif command == "XADD":
+        # XADD stream_key entry_id field1 value1 field2 value2 ...
+        # Master sends the final entry_id (no * or auto-generation needed)
+        if len(arguments) >= 4 and len(arguments) % 2 == 0:
+            stream_key = arguments[0]
+            entry_id = arguments[1]  # Master sends the final entry_id
+            
+            # Parse field-value pairs
+            fields = {}
+            for i in range(2, len(arguments), 2):
+                field = arguments[i]
+                value = arguments[i + 1]
+                fields[field] = value
+            
+            # Create stream if it doesn't exist
+            if stream_key not in Database:
+                Database[stream_key] = {"type": "stream", "entries": []}
+            
+            entry = Database[stream_key]
+            
+            # Check if it's actually a stream (not overwriting a string)
+            if entry["type"] == "stream":
+                # Add entry to stream
+                stream_entry = {"id": entry_id, "fields": fields}
+                entry["entries"].append(stream_entry)
+                
+                # Update the last ID for this stream
+                stream_last_ids[stream_key] = entry_id
+                
+                # Notify any waiting XREAD commands
+                with stream_conditions_lock:
+                    if stream_key in stream_conditions:
+                        condition = stream_conditions[stream_key]
+                        condition.acquire()
+                        condition.notify_all()
+                        condition.release()
+    
+    elif command == "INCR":
+        if len(arguments) == 1:
+            key = arguments[0]
+            
+            if key not in Database:
+                Database[key] = {"type": "string", "value": "0", "expiry": None}
+                new_value = 1
+            else:
+                entry = Database[key]
+                
+                # Check if it's a string type
+                if entry["type"] != "string":
+                    return  # Ignore wrong type for propagated commands
+                
+                # Check expiry
+                if entry.get("expiry") is not None and time.time() > entry["expiry"]:
+                    # Key expired, treat as if it doesn't exist
+                    del Database[key]
+                    Database[key] = {"type": "string", "value": "0", "expiry": None}
+                    new_value = 1
+                else:
+                    # Key exists - try to convert value to integer
+                    try:
+                        current_value = int(entry["value"])
+                        new_value = current_value + 1
+                    except ValueError:
+                        return  # Ignore errors for propagated commands
+            
+            # Store the new value as a string
+            Database[key]["value"] = str(new_value)
+
 def handle_client(connection):
     """Handle a single client connection - can receive multiple commands"""
     # Use global database shared across all clients
@@ -1115,13 +1211,145 @@ def connect_to_master_and_ping(master_host, master_port, replica_port):
         master_socket.sendall(psync_0)
         
         # Read PSYNC 0 response (+FULLRESYNC\r\n)
-        response = master_socket.recv(1024)
+        # The RDB file header might be in the same recv, so read carefully
+        response_buffer = b""
+        while b"\r\n" not in response_buffer:
+            chunk = master_socket.recv(1024)
+            if not chunk:
+                return None
+            response_buffer += chunk
+        
+        # Find the end of PSYNC response
+        psync_end = response_buffer.find(b"\r\n") + 2
+        # Any remaining data after PSYNC response is the RDB file header
+        remaining_after_psync = response_buffer[psync_end:]
+        
+        # Store remaining data as an attribute on the socket for read_rdb_file to use
+        master_socket._rdb_buffer = remaining_after_psync
         
         # Keep connection open for future PSYNC stage
         return master_socket
     except Exception as e:
         print(f"Error connecting to master: {e}")
         return None
+
+
+def read_rdb_file(master_socket):
+    """
+    Read the RDB file from master after PSYNC response.
+    Format: $<length>\r\n<binary_data> (no trailing \r\n after binary data)
+    Returns: (success: bool, remaining_buffer: bytes)
+    """
+    # Check if there's already data from PSYNC response read
+    buffer = getattr(master_socket, '_rdb_buffer', b"")
+    # Clear the attribute
+    if hasattr(master_socket, '_rdb_buffer'):
+        delattr(master_socket, '_rdb_buffer')
+    
+    # Read until we get the $ character
+    while b"$" not in buffer:
+        chunk = master_socket.recv(1024)
+        if not chunk:
+            return False, b""
+        buffer += chunk
+    
+    # Find the $ position
+    dollar_pos = buffer.find(b"$")
+    buffer = buffer[dollar_pos:]
+    
+    # Find the \r\n after the length
+    length_end = buffer.find(b"\r\n")
+    if length_end == -1:
+        # Need more data
+        while b"\r\n" not in buffer:
+            chunk = master_socket.recv(1024)
+            if not chunk:
+                return False, b""
+            buffer += chunk
+        length_end = buffer.find(b"\r\n")
+    
+    # Parse the length
+    length_str = buffer[1:length_end].decode('utf-8')
+    rdb_length = int(length_str)
+    
+    # Get the data after \r\n
+    data_start = length_end + 2
+    buffer = buffer[data_start:]
+    
+    # Read the RDB file data
+    while len(buffer) < rdb_length:
+        chunk = master_socket.recv(1024)
+        if not chunk:
+            return False, b""
+        buffer += chunk
+    
+    # Extract RDB data (we don't need to process it for empty RDB)
+    rdb_data = buffer[:rdb_length]
+    # Remaining data might contain commands, so we keep it
+    remaining = buffer[rdb_length:]
+    
+    return True, remaining
+
+
+def handle_master_commands(master_socket):
+    """
+    Continuously read and process commands from the master.
+    Commands are processed without sending responses back.
+    """
+    Database = global_database
+    stream_last_ids = {}
+    buffer = b""
+    
+    # First, read the RDB file
+    try:
+        success, remaining = read_rdb_file(master_socket)
+        if not success:
+            return
+        buffer = remaining
+    except Exception as e:
+        print(f"Error reading RDB file: {e}")
+        return
+    
+    # Now continuously read and process commands
+    while True:
+        try:
+            # Read data from master
+            chunk = master_socket.recv(1024)
+            if not chunk:
+                break
+            buffer += chunk
+            
+            # Parse and process all complete commands in buffer
+            pos = 0
+            while pos < len(buffer):
+                # Try to parse a command from current position
+                parsed, new_pos = parse_resp(buffer, pos)
+                
+                if parsed is None:
+                    # Incomplete command, wait for more data
+                    break
+                
+                # Update position
+                pos = new_pos
+                
+                # Process the command
+                if isinstance(parsed, list) and len(parsed) > 0:
+                    command = parsed[0].upper() if isinstance(parsed[0], str) else parsed[0]
+                    arguments = parsed[1:] if len(parsed) > 1 else []
+                    
+                    # Execute command without sending response
+                    execute_command_without_response(
+                        master_socket, command, arguments, Database, stream_last_ids
+                    )
+            
+            # Keep remaining unparsed data in buffer
+            buffer = buffer[pos:]
+            
+        except Exception as e:
+            print(f"Error handling master commands: {e}")
+            break
+    
+    master_socket.close()
 
 
 def main():
@@ -1169,7 +1397,12 @@ def main():
 
     # If replica mode, connect to master and send PING, then REPLCONF commands
     if master_host and master_port:
-        connect_to_master_and_ping(master_host, master_port, port)
+        master_socket = connect_to_master_and_ping(master_host, master_port, port)
+        if master_socket:
+            # Start a thread to handle commands from master
+            master_thread = threading.Thread(target=handle_master_commands, args=(master_socket,))
+            master_thread.daemon = True
+            master_thread.start()
 
     # Uncomment the code below to pass the first stage
     server_socket = socket.create_server(("localhost", port), reuse_port=True)
