@@ -1322,38 +1322,39 @@ def handle_master_commands(master_socket, initial_rdb_buffer=b""):
     # Now continuously read and process commands
     while True:
         try:
-            # Read data from master
-            chunk = master_socket.recv(1024)
-            if not chunk:
-                break
-            buffer += chunk
-            
+            # If there's no buffered data, read from master
+            if not buffer:
+                chunk = master_socket.recv(1024)
+                if not chunk:
+                    break
+                buffer += chunk
+
             # Parse and process all complete commands in buffer
             pos = 0
             while pos < len(buffer):
                 # Try to parse a command from current position
                 parsed, new_pos = parse_resp(buffer, pos)
-                
+
                 if parsed is None:
                     # Incomplete command, wait for more data
                     break
-                
+
                 # Update position
                 pos = new_pos
-                
+
                 # Process the command
                 if isinstance(parsed, list) and len(parsed) > 0:
                     command = parsed[0].upper() if isinstance(parsed[0], str) else parsed[0]
                     arguments = parsed[1:] if len(parsed) > 1 else []
-                    
+
                     # Execute command (REPLCONF GETACK will send response, others won't)
                     execute_command_for_replica(
                         master_socket, command, arguments, Database, stream_last_ids
                     )
-            
+
             # Keep remaining unparsed data in buffer
             buffer = buffer[pos:]
-            
+
         except Exception as e:
             print(f"Error handling master commands: {e}")
             break
