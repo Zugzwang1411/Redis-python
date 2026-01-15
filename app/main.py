@@ -1086,26 +1086,20 @@ def execute_command_for_replica(connection, command, arguments, Database, stream
     elif command == "REPLCONF":
         if len(arguments) < 2:
             return
-        else:
-            if arguments[0].upper() == "GETACK":
-                response = b"*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$1\r\n0\r\n"
-                connection.sendall(response)
-
-    # Get first argument, handling both string and bytes
+        
+        # Get first argument, handling both string and bytes
         first_arg = arguments[0]
         if isinstance(first_arg, bytes):
-          first_arg = first_arg.decode('utf-8')
+            first_arg = first_arg.decode('utf-8')
         elif not isinstance(first_arg, str):
             first_arg = str(first_arg)
+        
+        # Check if this is a GETACK command (case-insensitive)
         if first_arg.upper() == "GETACK":
             # Respond with REPLCONF ACK <offset> as RESP array
             # Format: *3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$1\r\n0\r\n
             response = b"*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$1\r\n0\r\n"
-            try:
-                connection.sendall(response)
-            except Exception as e:
-                print(f"Error sending REPLCONF ACK: {e}")
-                return
+            connection.sendall(response)
     
 
 def handle_client(connection):
@@ -1356,7 +1350,7 @@ def handle_master_commands(master_socket, initial_rdb_buffer=b""):
                     command = parsed[0].upper() if isinstance(parsed[0], str) else parsed[0]
                     arguments = parsed[1:] if len(parsed) > 1 else []
                     
-                    # Execute command without sending response
+                    # Execute command (REPLCONF GETACK will send response, others won't)
                     execute_command_for_replica(
                         master_socket, command, arguments, Database, stream_last_ids
                     )
