@@ -987,7 +987,7 @@ def execute_single_command(connection, command, arguments, Database, stream_last
     else:
         connection.sendall(b"-ERR unknown command\r\n")
 
-def execute_command_without_response(connection, command, arguments, Database, stream_last_ids):
+def execute_command_for_replica(connection, command, arguments, Database, stream_last_ids):
     """
     Execute a command without sending a response back.
     This is used for processing propagated commands from the master.
@@ -1082,6 +1082,14 @@ def execute_command_without_response(connection, command, arguments, Database, s
             
             # Store the new value as a string
             Database[key]["value"] = str(new_value)
+
+    elif command == "REPLCONF":
+        if len(arguments) != 2:
+            return
+        else:
+            #we need to send the response to the replica REPLCONF ACK <offset> with offset as 0
+            response = f"+REPLCONF ACK 0\r\n"
+            connection.sendall(response.encode())
 
 def handle_client(connection):
     """Handle a single client connection - can receive multiple commands"""
@@ -1332,7 +1340,7 @@ def handle_master_commands(master_socket, initial_rdb_buffer=b""):
                     arguments = parsed[1:] if len(parsed) > 1 else []
                     
                     # Execute command without sending response
-                    execute_command_without_response(
+                    execute_command_for_replica(
                         master_socket, command, arguments, Database, stream_last_ids
                     )
             
