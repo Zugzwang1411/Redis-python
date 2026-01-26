@@ -22,6 +22,19 @@ EMPTY_RDB_BINARY = base64.b64decode(EMPTY_RDB_BASE64)
 replica_connections = set()
 replica_connections_lock = threading.Lock()
 
+# Master replication offset: total bytes of write commands sent to replicas
+master_repl_offset = 0
+master_repl_offset_lock = threading.Lock()
+
+# Map replica connections to their current acknowledged offset
+# Key: replica connection socket, Value: acknowledged offset (int)
+replica_offset_map = {}
+replica_offset_map_lock = threading.Lock()
+
+# Map replica connections to locks for thread-safe socket access
+replica_socket_locks = {}
+replica_socket_locks_lock = threading.Lock()
+
 
 def parse_resp(data, pos=0):
     """
@@ -302,6 +315,85 @@ def is_replica_connection(connection):
         return connection in replica_connections
 
 
+def send_getack_and_receive_ack(replica_conn, timeout_ms):
+    """
+    Send REPLCONF GETACK * to a replica and wait for REPLCONF ACK <offset> response.
+    
+    Args:
+        replica_conn: The replica connection socket
+        timeout_ms: Timeout in milliseconds
+    
+    Returns:
+        int or None: The offset value from ACK response, or None if timeout/error
+    """
+    # Get or create lock for this replica connection
+    with replica_socket_locks_lock:
+        if replica_conn not in replica_socket_locks:
+            replica_socket_locks[replica_conn] = threading.Lock()
+        sock_lock = replica_socket_locks[replica_conn]
+    
+    # Acquire lock to ensure thread-safe socket access
+    with sock_lock:
+        try:
+            # Send REPLCONF GETACK * command
+            getack_command = b"*3\r\n$8\r\nREPLCONF\r\n$6\r\nGETACK\r\n$1\r\n*\r\n"
+            replica_conn.sendall(getack_command)
+            
+            # Set socket timeout
+            original_timeout = replica_conn.gettimeout()
+            timeout_seconds = timeout_ms / 1000.0
+            replica_conn.settimeout(timeout_seconds)
+            
+            try:
+                # Read response: *3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$<len>\r\n<offset>\r\n
+                buffer = b""
+                start_time = time.time()
+                
+                while True:
+                    # Check if timeout expired
+                    elapsed = time.time() - start_time
+                    if elapsed >= timeout_seconds:
+                        return None
+                    
+                    remaining_time = timeout_seconds - elapsed
+                    replica_conn.settimeout(remaining_time)
+                    
+                    try:
+                        chunk = replica_conn.recv(1024)
+                        if not chunk:
+                            return None
+                        buffer += chunk
+                    except socket.timeout:
+                        return None
+                    
+                    # Try to parse the response
+                    try:
+                        parsed, pos = parse_resp(buffer, 0)
+                        if parsed is not None and isinstance(parsed, list) and len(parsed) == 3:
+                            if (str(parsed[0]).upper() == "REPLCONF" and 
+                                str(parsed[1]).upper() == "ACK"):
+                                # Extract offset
+                                offset_str = str(parsed[2])
+                                offset = int(offset_str)
+                                return offset
+                    except (ValueError, IndexError, TypeError):
+                        # Continue reading if parsing fails
+                        pass
+                    
+                    # Prevent infinite loop - if buffer gets too large, something's wrong
+                    if len(buffer) > 4096:
+                        return None
+            finally:
+                # Restore original timeout
+                if original_timeout is None:
+                    replica_conn.settimeout(None)
+                else:
+                    replica_conn.settimeout(original_timeout)
+                
+        except (BrokenPipeError, ConnectionResetError, OSError, socket.timeout):
+            return None
+
+
 def propagate_command_to_replicas(command, arguments):
     """
     Propagate a write command to all connected replicas.
@@ -315,6 +407,12 @@ def propagate_command_to_replicas(command, arguments):
     """
     # Encode the command as a RESP array
     resp_command = encode_command_as_resp(command, arguments)
+    
+    # Update master replication offset (total bytes sent to replicas)
+    command_bytes = len(resp_command)
+    with master_repl_offset_lock:
+        global master_repl_offset
+        master_repl_offset += command_bytes
     
     # Send to all replica connections
     with replica_connections_lock:
@@ -330,6 +428,11 @@ def propagate_command_to_replicas(command, arguments):
             # Replica connection is broken, remove it from the set
             with replica_connections_lock:
                 replica_connections.discard(replica_conn)
+            # Also remove from offset map and socket locks
+            with replica_offset_map_lock:
+                replica_offset_map.pop(replica_conn, None)
+            with replica_socket_locks_lock:
+                replica_socket_locks.pop(replica_conn, None)
 
 
 def execute_single_command(connection, command, arguments, Database, stream_last_ids):
@@ -983,6 +1086,9 @@ def execute_single_command(connection, command, arguments, Database, stream_last
             # After the handshake is complete, this connection will receive propagated commands
             with replica_connections_lock:
                 replica_connections.add(connection)
+            # Initialize socket lock for this replica
+            with replica_socket_locks_lock:
+                replica_socket_locks[connection] = threading.Lock()
 
     elif command == "WAIT":
         if len(arguments) != 2:
@@ -990,22 +1096,76 @@ def execute_single_command(connection, command, arguments, Database, stream_last
         else:
             try:
                 numreplicas = int(arguments[0])
-                timeout = int(arguments[1])
+                timeout_ms = int(arguments[1])
             except ValueError:
                 connection.sendall(b"-ERR value is not an integer or out of range\r\n")
                 return
             
+            # Get list of replica connections
             with replica_connections_lock:
-                replica_connections_count = len(replica_connections)
-            # For now, handle only the simplest case: numreplicas is 0
-            # When numreplicas is 0, we don't need any replicas, so return 0 immediately
+                replicas = list(replica_connections)
+            
             if numreplicas == 0:
+                # Don't need any replicas, return 0 immediately
                 response = ":0\r\n"
                 connection.sendall(response.encode())
-            else:
-                # Will be extended in later stages to track replicas
-                response = f":{replica_connections_count}\r\n"
+                return
+            
+            # Get master replication offset
+            with master_repl_offset_lock:
+                current_master_offset = master_repl_offset
+            
+            # If no write commands have been sent, all replicas have "acknowledged" everything
+            # Return the number of connected replicas
+            if current_master_offset == 0:
+                num_connected = len(replicas)
+                response = f":{num_connected}\r\n"
                 connection.sendall(response.encode())
+                return
+            
+            # Send REPLCONF GETACK * to all replicas and collect ACK responses
+            # Use threading to handle multiple replicas concurrently
+            ack_results = {}
+            ack_results_lock = threading.Lock()
+            
+            def get_ack_from_replica(replica_conn):
+                """Get ACK from a single replica"""
+                offset = send_getack_and_receive_ack(replica_conn, timeout_ms)
+                with ack_results_lock:
+                    ack_results[replica_conn] = offset
+            
+            # Start threads to get ACKs from all replicas
+            threads = []
+            for replica_conn in replicas:
+                thread = threading.Thread(target=get_ack_from_replica, args=(replica_conn,))
+                thread.daemon = True
+                thread.start()
+                threads.append(thread)
+            
+            # Wait for all threads to complete or timeout
+            start_time = time.time()
+            timeout_seconds = timeout_ms / 1000.0
+            
+            for thread in threads:
+                remaining_time = timeout_seconds - (time.time() - start_time)
+                if remaining_time <= 0:
+                    break
+                thread.join(timeout=min(remaining_time, 0.1))
+            
+            # Count how many replicas have acknowledged all previous write commands
+            # A replica has caught up if its offset >= master_offset
+            acknowledged_count = 0
+            with ack_results_lock:
+                for replica_conn, offset in ack_results.items():
+                    if offset is not None and offset >= current_master_offset:
+                        acknowledged_count += 1
+                        # Update replica offset map
+                        with replica_offset_map_lock:
+                            replica_offset_map[replica_conn] = offset
+            
+            # Return the number of replicas that acknowledged all previous write commands
+            response = f":{acknowledged_count}\r\n"
+            connection.sendall(response.encode())
 
     else:
         connection.sendall(b"-ERR unknown command\r\n")
