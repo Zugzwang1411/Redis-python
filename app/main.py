@@ -1000,10 +1000,12 @@ def execute_single_command(connection, command, arguments, Database, stream_last
             # For now, handle only the simplest case: numreplicas is 0
             # When numreplicas is 0, we don't need any replicas, so return 0 immediately
             if numreplicas == 0:
-                connection.sendall(b":0\r\n")
+                response = ":0\r\n"
+                connection.sendall(response.encode())
             else:
                 # Will be extended in later stages to track replicas
-                connection.sendall(f":{replica_connections_count}\r\n")
+                response = f":{replica_connections_count}\r\n"
+                connection.sendall(response.encode())
 
     else:
         connection.sendall(b"-ERR unknown command\r\n")
