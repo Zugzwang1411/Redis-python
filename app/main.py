@@ -1142,18 +1142,34 @@ def execute_single_command(connection, command, arguments, Database, stream_last
                 thread.start()
                 threads.append(thread)
             
-            # Wait for all threads to complete or timeout
+            # Wait until we have enough acknowledgements or timeout expires
             start_time = time.time()
             timeout_seconds = timeout_ms / 1000.0
+            check_interval = 0.01  # Check every 10ms
             
-            for thread in threads:
-                remaining_time = timeout_seconds - (time.time() - start_time)
+            while True:
+                elapsed = time.time() - start_time
+                remaining_time = timeout_seconds - elapsed
+                
+                # Check if timeout expired
                 if remaining_time <= 0:
                     break
-                thread.join(timeout=min(remaining_time, 0.1))
+                
+                # Count how many replicas have acknowledged all previous write commands
+                acknowledged_count = 0
+                with ack_results_lock:
+                    for replica_conn, offset in ack_results.items():
+                        if offset is not None and offset >= current_master_offset:
+                            acknowledged_count += 1
+                
+                # If we have enough acknowledgements, return early
+                if acknowledged_count >= numreplicas:
+                    break
+                
+                # Wait a short time before checking again
+                time.sleep(min(check_interval, remaining_time))
             
-            # Count how many replicas have acknowledged all previous write commands
-            # A replica has caught up if its offset >= master_offset
+            # Final count of acknowledged replicas
             acknowledged_count = 0
             with ack_results_lock:
                 for replica_conn, offset in ack_results.items():
