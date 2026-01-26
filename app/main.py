@@ -984,6 +984,25 @@ def execute_single_command(connection, command, arguments, Database, stream_last
             with replica_connections_lock:
                 replica_connections.add(connection)
 
+    elif command == "WAIT":
+        if len(arguments) != 2:
+            connection.sendall(b"-ERR wrong number of arguments for 'wait' command\r\n")
+        else:
+            try:
+                numreplicas = int(arguments[0])
+                timeout = int(arguments[1])
+            except ValueError:
+                connection.sendall(b"-ERR value is not an integer or out of range\r\n")
+                return
+            
+            # For now, handle only the simplest case: numreplicas is 0
+            # When numreplicas is 0, we don't need any replicas, so return 0 immediately
+            if numreplicas == 0:
+                connection.sendall(b":0\r\n")
+            else:
+                # Will be extended in later stages to track replicas
+                connection.sendall(b":0\r\n")
+
     else:
         connection.sendall(b"-ERR unknown command\r\n")
 
