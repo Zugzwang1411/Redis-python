@@ -987,11 +987,14 @@ def execute_single_command(connection, command, arguments, Database, stream_last
     else:
         connection.sendall(b"-ERR unknown command\r\n")
 
-def execute_command_for_replica(connection, command, arguments, Database, stream_last_ids):
+def execute_command_for_replica(connection, command, arguments, Database, stream_last_ids, replica_offset):
     """
     Execute a command without sending a response back.
     This is used for processing propagated commands from the master.
     Exception: REPLCONF GETACK * should send a response.
+    
+    Args:
+        replica_offset: List containing the current offset (modified in place for GETACK)
     """
     # Handle REPLCONF GETACK - this is the only command that gets a response after handshake
     if command == "REPLCONF" and len(arguments) == 2:
@@ -1000,13 +1003,20 @@ def execute_command_for_replica(connection, command, arguments, Database, stream
         arg1_str = str(arguments[1])
         
         if arg0_str == "GETACK" and arg1_str == "*":
-            # Send REPLCONF ACK 0 as RESP array: *3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$1\r\n0\r\n
-            response = b"*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$1\r\n0\r\n"
-            connection.sendall(response)
+            # Send REPLCONF ACK <offset> as RESP array
+            # Format: *3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$<offset_len>\r\n<offset>\r\n
+            offset_value = replica_offset[0]
+            offset_str = str(offset_value)
+            response = f"*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n${len(offset_str)}\r\n{offset_str}\r\n"
+            connection.sendall(response.encode())
             return
     
     # All other commands are processed silently (no response)
-    if command == "SET":
+    if command == "PING":
+        # PING is processed silently (no response sent back to master)
+        pass
+    
+    elif command == "SET":
         if len(arguments) >= 2:
             key = arguments[0]
             value = arguments[1]
@@ -1308,6 +1318,9 @@ def handle_master_commands(master_socket, initial_rdb_buffer=b""):
     Database = global_database
     stream_last_ids = {}
     buffer = b""
+    # Track offset: total bytes of commands processed
+    # Use a list to allow modification in execute_command_for_replica
+    replica_offset = [0]
     
     # First, read the RDB file
     try:
@@ -1332,6 +1345,9 @@ def handle_master_commands(master_socket, initial_rdb_buffer=b""):
             # Parse and process all complete commands in buffer
             pos = 0
             while pos < len(buffer):
+                # Store start position to calculate command byte size
+                start_pos = pos
+                
                 # Try to parse a command from current position
                 parsed, new_pos = parse_resp(buffer, pos)
 
@@ -1339,6 +1355,9 @@ def handle_master_commands(master_socket, initial_rdb_buffer=b""):
                     # Incomplete command, wait for more data
                     break
 
+                # Calculate the byte size of this command
+                command_bytes = new_pos - start_pos
+                
                 # Update position
                 pos = new_pos
 
@@ -1348,9 +1367,14 @@ def handle_master_commands(master_socket, initial_rdb_buffer=b""):
                     arguments = parsed[1:] if len(parsed) > 1 else []
 
                     # Execute command (REPLCONF GETACK will send response, others won't)
+                    # For GETACK, the offset used in response is the current offset (before this command)
                     execute_command_for_replica(
-                        master_socket, command, arguments, Database, stream_last_ids
+                        master_socket, command, arguments, Database, stream_last_ids, replica_offset
                     )
+                    
+                    # Update offset after processing
+                    # Add the command bytes to offset for all commands (including GETACK)
+                    replica_offset[0] += command_bytes
 
             # Keep remaining unparsed data in buffer
             buffer = buffer[pos:]
