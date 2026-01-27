@@ -35,6 +35,10 @@ replica_offset_map_lock = threading.Lock()
 replica_socket_locks = {}
 replica_socket_locks_lock = threading.Lock()
 
+# RDB configuration
+rdb_dir = ""
+rdb_dbfilename = "dump.rdb"
+
 
 def parse_resp(data, pos=0):
     """
@@ -1136,6 +1140,38 @@ def execute_single_command(connection, command, arguments, Database, stream_last
             response = f":{acknowledged_count}\r\n"
             connection.sendall(response.encode())
 
+    elif command == "CONFIG":
+        if len(arguments) < 1:
+            connection.sendall(b"-ERR wrong number of arguments for 'config' command\r\n")
+        else:
+            subcommand = str(arguments[0]).upper()
+            if subcommand == "GET":
+                if len(arguments) != 2:
+                    connection.sendall(b"-ERR wrong number of arguments for 'config get' command\r\n")
+                else:
+                    # Get the parameter name
+                    param_name = str(arguments[1]).lower()
+                    
+                    # Look up the parameter value
+                    param_value = None
+                    if param_name == "dir":
+                        param_value = rdb_dir
+                    elif param_name == "dbfilename":
+                        param_value = rdb_dbfilename
+                    
+                    # Return RESP array with parameter name and value
+                    if param_value is not None:
+                        # Format: *2\r\n$<name_len>\r\n<name>\r\n$<value_len>\r\n<value>\r\n
+                        name_bytes = param_name.encode('utf-8')
+                        value_bytes = str(param_value).encode('utf-8')
+                        response = f"*2\r\n${len(name_bytes)}\r\n{param_name}\r\n${len(value_bytes)}\r\n{param_value}\r\n"
+                        connection.sendall(response.encode())
+                    else:
+                        # Unknown parameter - return empty array
+                        connection.sendall(b"*0\r\n")
+            else:
+                connection.sendall(b"-ERR unknown subcommand or wrong number of arguments for 'config' command\r\n")
+
     else:
         connection.sendall(b"-ERR unknown command\r\n")
 
@@ -1579,6 +1615,32 @@ def main():
                 sys.exit(1)
         except (ValueError, IndexError) as e:
             print(f"Invalid --replicaof argument: {e}")
+            sys.exit(1)
+
+    # Parse --dir flag
+    global rdb_dir
+    if '--dir' in args:
+        dir_index = args.index('--dir')
+        try:
+            if dir_index + 1 >= len(args):
+                print("Invalid --dir format. Expected: --dir <DIRECTORY>")
+                sys.exit(1)
+            rdb_dir = args[dir_index + 1]
+        except (ValueError, IndexError) as e:
+            print(f"Invalid --dir argument: {e}")
+            sys.exit(1)
+
+    # Parse --dbfilename flag
+    global rdb_dbfilename
+    if '--dbfilename' in args:
+        dbfilename_index = args.index('--dbfilename')
+        try:
+            if dbfilename_index + 1 >= len(args):
+                print("Invalid --dbfilename format. Expected: --dbfilename <FILENAME>")
+                sys.exit(1)
+            rdb_dbfilename = args[dbfilename_index + 1]
+        except (ValueError, IndexError) as e:
+            print(f"Invalid --dbfilename argument: {e}")
             sys.exit(1)
 
     # If replica mode, connect to master and send PING, then REPLCONF commands
