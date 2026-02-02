@@ -454,6 +454,7 @@ def validate_command_syntax(command, arguments):
         "MULTI": (0,),
         "EXEC": (0,),
         "DISCARD": (0,),
+        "SUBSCRIBE": (1,),
     }
     
     if command not in command_arg_counts:
@@ -608,7 +609,7 @@ def propagate_command_to_replicas(command, arguments):
                 replica_socket_locks.pop(replica_conn, None)
 
 
-def execute_single_command(connection, command, arguments, Database, stream_last_ids):
+def execute_single_command(connection, command, arguments, Database, stream_last_ids, subscribed_channels=None):
     """Execute a single command against Database, writing responses to the provided connection."""
     if command == "PING":
         connection.sendall(b"+PONG\r\n")
@@ -1414,6 +1415,19 @@ def execute_single_command(connection, command, arguments, Database, stream_last
             else:
                 connection.sendall(b"-ERR unknown subcommand or wrong number of arguments for 'config' command\r\n")
 
+    elif command == "SUBSCRIBE":
+        if len(arguments) != 1:
+            connection.sendall(b"-ERR wrong number of arguments for 'subscribe' command\r\n")
+        else:
+            channel = arguments[0]
+            if subscribed_channels is None:
+                subscribed_channels = set()
+            subscribed_channels.add(channel)
+            channel_bytes = channel.encode('utf-8')
+            count = len(subscribed_channels)
+            response = f"*3\r\n$9\r\nsubscribe\r\n${len(channel_bytes)}\r\n{channel}\r\n:{count}\r\n"
+            connection.sendall(response.encode())
+
     else:
         connection.sendall(b"-ERR unknown command\r\n")
 
@@ -1542,6 +1556,7 @@ def handle_client(connection):
     """Handle a single client connection - can receive multiple commands"""
     # Use global database shared across all clients
     Database = global_database
+    subscribed_channels = set()
     stream_last_ids = {}
     in_transaction = False
     transaction_queue = []
@@ -1582,7 +1597,7 @@ def handle_client(connection):
                     responses = []
                     for queued_command, queued_arguments in transaction_queue:
                         buffer_conn = BufferConnection()
-                        execute_single_command(buffer_conn, queued_command, queued_arguments, Database, stream_last_ids)
+                        execute_single_command(buffer_conn, queued_command, queued_arguments, Database, stream_last_ids, subscribed_channels)
                         response = buffer_conn.get_response()
                         # Include all responses (both success and error) in the array
                         responses.append(response)
@@ -1623,7 +1638,7 @@ def handle_client(connection):
             continue
 
         # Not in transaction: execute immediately
-        execute_single_command(connection, command, arguments, Database, stream_last_ids)
+        execute_single_command(connection, command, arguments, Database, stream_last_ids, subscribed_channels)
     
     connection.close()
 
