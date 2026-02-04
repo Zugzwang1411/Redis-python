@@ -615,7 +615,7 @@ def execute_single_command(connection, command, arguments, Database, stream_last
         if not in_subscribed_mode[0]:
             connection.sendall(b"+PONG\r\n")
         else:
-            connection.sendall(b"*2\r\n$4\r\nPONG\r\n$0\r\n\r\n")
+            connection.sendall(b"*2\r\n$4\r\npong\r\n$0\r\n\r\n")
 
     elif command == "ECHO":
         if arguments and len(arguments) > 0:
