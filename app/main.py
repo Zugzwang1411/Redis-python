@@ -1455,11 +1455,28 @@ def execute_single_command(connection, command, arguments, Database, stream_last
             message = arguments[1]  # Not used yet, but required for command syntax
             
             # Count subscribers for this channel
+            subscribers = []
             with channel_subscribers_lock:
                 if channel in channel_subscribers:
+                    subscribers = list(channel_subscribers[channel])
                     subscriber_count = len(channel_subscribers[channel])
                 else:
                     subscriber_count = 0
+
+            channel_bytes = channel.encode('utf-8')
+            message_bytes = message.encode('utf-8')
+            pub_message = f"*3\r\n$7\r\nmessage\r\n${len(channel_bytes)}\r\n{channel}\r\n${len(message_bytes)}\r\n{message}\r\n"
+            pub_message_bytes = pub_message.encode('utf-8')
+
+            for subscriber_conns in subscribers:
+                try:
+                    subscriber_conns.sendall(pub_message_bytes)
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    with channel_subscribers_lock:
+                        if channel in channel_subscribers:
+                            channel_subscribers[channel].discard(subscriber_conns)
+                            if len(channel_subscribers[channel]) == 0:
+                                del channel_subscribers[channel]
             
             # Return subscriber count as RESP integer
             response = f":{subscriber_count}\r\n"
