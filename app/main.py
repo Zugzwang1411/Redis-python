@@ -1499,12 +1499,6 @@ def execute_single_command(connection, command, arguments, Database, stream_last
             if count == 0:
                 in_subscribed_mode[0] = False
 
-    elif command == "PSUBSCRIBE":
-        if len(arguments) != 1:
-            connection.sendall(b"-ERR wrong number of arguments for 'psubscribe' command\r\n")
-        else:
-            pattern = arguments[0]
-            if subscribed_patterns is None:
     else:
         connection.sendall(b"-ERR unknown command\r\n")
 
