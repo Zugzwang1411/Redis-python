@@ -609,12 +609,8 @@ def propagate_command_to_replicas(command, arguments):
                 replica_socket_locks.pop(replica_conn, None)
 
 
-def execute_single_command(connection, command, arguments, Database, stream_last_ids, subscribed_channels=None, in_subscribed_mode=False):
+def execute_single_command(connection, command, arguments, Database, stream_last_ids, subscribed_channels=None, in_subscribed_mode=None):
     """Execute a single command against Database, writing responses to the provided connection."""
-    sub_allowed_commands = ["SUBSCRIBE", "UNSUBSCRIBE", "PSUBSCRIBE", "PUNSUBSCRIBE", "PING", "QUIT"]
-    if in_subscribed_mode and command not in sub_allowed_commands:
-        connection.sendall(f"-ERR can't execute {command} in subscribed mode\r\n".encode())
-        return
     if command == "PING":
         connection.sendall(b"+PONG\r\n")
 
@@ -1431,7 +1427,9 @@ def execute_single_command(connection, command, arguments, Database, stream_last
             count = len(subscribed_channels)
             response = f"*3\r\n$9\r\nsubscribe\r\n${len(channel_bytes)}\r\n{channel}\r\n:{count}\r\n"
             connection.sendall(response.encode())
-            in_subscribed_mode = True
+            # Set subscribed mode flag
+            if in_subscribed_mode is not None:
+                in_subscribed_mode[0] = True
 
     else:
         connection.sendall(b"-ERR unknown command\r\n")
@@ -1566,7 +1564,9 @@ def handle_client(connection):
     in_transaction = False
     transaction_queue = []
     transaction_error = False
-    in_subscribed_mode = False
+    in_subscribed_mode = [False]  # Use list for mutability
+    # Define allowed commands in subscribed mode
+    allowed_in_subscribed_mode = {"SUBSCRIBE", "UNSUBSCRIBE", "PSUBSCRIBE", "PUNSUBSCRIBE", "PING", "QUIT"}
     while True:
         data = connection.recv(1024)
         if not data:
@@ -1578,6 +1578,13 @@ def handle_client(connection):
         command, arguments = parse_command(data)
         if command is None:
             continue
+
+        # Check if in subscribed mode and command is not allowed
+        if in_subscribed_mode[0] and command not in allowed_in_subscribed_mode:
+            cmd_lower = command.lower()
+            error_msg = f"-ERR Can't execute '{cmd_lower}': only (P|S)SUBSCRIBE / (P|S)UNSUBSCRIBE / PING / QUIT / RESET are allowed in this context\r\n"
+            connection.sendall(error_msg.encode())
+            continue  # Skip executing this command
 
         if command == "MULTI":
             if in_transaction:
