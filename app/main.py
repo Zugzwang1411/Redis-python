@@ -1481,7 +1481,30 @@ def execute_single_command(connection, command, arguments, Database, stream_last
             # Return subscriber count as RESP integer
             response = f":{subscriber_count}\r\n"
             connection.sendall(response.encode())
+    
+    elif command == "UNSUBSCRIBE":
+        if len(arguments)!=1:
+            connection.sendall(b"-ERR wrong number of arguments for 'unsubscribe' command\r\n")
+        else:
+            channel = arguments[0]
+            with channel_subscribers_lock:
+                if channel in channel_subscribers:
+                    channel_subscribers[channel].discard(connection)
+                    if len(channel_subscribers[channel]) == 0:
+                        del channel_subscribers[channel]
+            channel_bytes = channel.encode('utf-8')
+            count = len(channel_subscribers[channel])
+            response = f"*3\r\n$11\r\nunsubscribe\r\n${len(channel_bytes)}\r\n{channel}\r\n:{count}\r\n"
+            connection.sendall(response.encode())
+            if count == 0:
+                in_subscribed_mode[0] = False
 
+    elif command == "PSUBSCRIBE":
+        if len(arguments) != 1:
+            connection.sendall(b"-ERR wrong number of arguments for 'psubscribe' command\r\n")
+        else:
+            pattern = arguments[0]
+            if subscribed_patterns is None:
     else:
         connection.sendall(b"-ERR unknown command\r\n")
 
