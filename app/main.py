@@ -37,6 +37,11 @@ replica_offset_map_lock = threading.Lock()
 replica_socket_locks = {}
 replica_socket_locks_lock = threading.Lock()
 
+# Global map to track channel subscriptions
+# Key: channel_name (str), Value: set of connections subscribed to that channel
+channel_subscribers = {}
+channel_subscribers_lock = threading.Lock()
+
 # RDB configuration
 rdb_dir = ""
 rdb_dbfilename = "dump.rdb"
@@ -455,6 +460,7 @@ def validate_command_syntax(command, arguments):
         "EXEC": (0,),
         "DISCARD": (0,),
         "SUBSCRIBE": (1,),
+        "PUBLISH": (2,),
     }
     
     if command not in command_arg_counts:
@@ -1426,6 +1432,13 @@ def execute_single_command(connection, command, arguments, Database, stream_last
             if subscribed_channels is None:
                 subscribed_channels = set()
             subscribed_channels.add(channel)
+            
+            # Add connection to global channel subscribers map
+            with channel_subscribers_lock:
+                if channel not in channel_subscribers:
+                    channel_subscribers[channel] = set()
+                channel_subscribers[channel].add(connection)
+            
             channel_bytes = channel.encode('utf-8')
             count = len(subscribed_channels)
             response = f"*3\r\n$9\r\nsubscribe\r\n${len(channel_bytes)}\r\n{channel}\r\n:{count}\r\n"
@@ -1433,6 +1446,24 @@ def execute_single_command(connection, command, arguments, Database, stream_last
             # Set subscribed mode flag
             if in_subscribed_mode is not None:
                 in_subscribed_mode[0] = True
+
+    elif command == "PUBLISH":
+        if len(arguments) != 2:
+            connection.sendall(b"-ERR wrong number of arguments for 'publish' command\r\n")
+        else:
+            channel = arguments[0]
+            message = arguments[1]  # Not used yet, but required for command syntax
+            
+            # Count subscribers for this channel
+            with channel_subscribers_lock:
+                if channel in channel_subscribers:
+                    subscriber_count = len(channel_subscribers[channel])
+                else:
+                    subscriber_count = 0
+            
+            # Return subscriber count as RESP integer
+            response = f":{subscriber_count}\r\n"
+            connection.sendall(response.encode())
 
     else:
         connection.sendall(b"-ERR unknown command\r\n")
@@ -1655,6 +1686,14 @@ def handle_client(connection):
 
         # Not in transaction: execute immediately
         execute_single_command(connection, command, arguments, Database, stream_last_ids, subscribed_channels, in_subscribed_mode)
+    
+    # Clean up: remove connection from all channel subscriptions
+    with channel_subscribers_lock:
+        for channel in list(channel_subscribers.keys()):
+            channel_subscribers[channel].discard(connection)
+            # Remove empty channel entries
+            if len(channel_subscribers[channel]) == 0:
+                del channel_subscribers[channel]
     
     connection.close()
 
