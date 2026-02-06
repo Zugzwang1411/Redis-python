@@ -461,6 +461,7 @@ def validate_command_syntax(command, arguments):
         "DISCARD": (0,),
         "SUBSCRIBE": (1,),
         "PUBLISH": (2,),
+        "ZADD": (3,),  # ZADD key score member
     }
     
     if command not in command_arg_counts:
@@ -851,6 +852,8 @@ def execute_single_command(connection, command, arguments, Database, stream_last
                         connection.sendall(b"+string\r\n")
                     elif entry["type"] == "stream":
                         connection.sendall(b"+stream\r\n")
+                    elif entry["type"] == "zset":
+                        connection.sendall(b"+zset\r\n")
                     else:
                         connection.sendall(b"+none\r\n")
 
@@ -1499,6 +1502,60 @@ def execute_single_command(connection, command, arguments, Database, stream_last
             if count == 0:
                 in_subscribed_mode[0] = False
 
+    elif command == "ZADD":
+        if len(arguments) != 3:
+            connection.sendall(b"-ERR wrong number of arguments for 'zadd' command\r\n")
+        else:
+            key = arguments[0]
+            try:
+                score = float(arguments[1])  # 64-bit floating point
+            except ValueError:
+                connection.sendall(b"-ERR value is not a valid float\r\n")
+                return
+            member = arguments[2]
+            
+            # Create sorted set if it doesn't exist
+            if key not in Database:
+                # Create new sorted set with the member
+                # Store as list of (score, member) tuples, sorted by score
+                Database[key] = {"type": "zset", "members": [(score, member)]}
+                new_members_count = 1
+            else:
+                entry = Database[key]
+                
+                # Check if it's actually a sorted set
+                if entry["type"] != "zset":
+                    connection.sendall(b"-ERR WRONGTYPE Operation against a key holding the wrong kind of value\r\n")
+                    return
+                
+                # Check if member already exists
+                members = entry["members"]
+                member_exists = False
+                for i, (existing_score, existing_member) in enumerate(members):
+                    if existing_member == member:
+                        member_exists = True
+                        # Update the score and re-sort
+                        members[i] = (score, member)
+                        members.sort(key=lambda x: (x[0], x[1]))  # Sort by score, then member for stability
+                        break
+                
+                if not member_exists:
+                    # Add new member and keep sorted
+                    members.append((score, member))
+                    members.sort(key=lambda x: (x[0], x[1]))  # Sort by score, then member for stability
+                    new_members_count = 1
+                else:
+                    # Member already exists, so no new members added
+                    new_members_count = 0
+            
+            # Return the number of new members added as RESP integer
+            response = f":{new_members_count}\r\n"
+            connection.sendall(response.encode())
+            
+            # Propagate ZADD command to replicas (only if this is not a replica connection)
+            if not is_replica_connection(connection):
+                propagate_command_to_replicas(command, arguments)
+
     else:
         connection.sendall(b"-ERR unknown command\r\n")
 
@@ -1622,6 +1679,41 @@ def execute_command_for_replica(connection, command, arguments, Database, stream
             # Store the new value as a string
             Database[key]["value"] = str(new_value)
     
+    elif command == "ZADD":
+        if len(arguments) == 3:
+            key = arguments[0]
+            try:
+                score = float(arguments[1])  # 64-bit floating point
+            except ValueError:
+                return  # Ignore errors for propagated commands
+            member = arguments[2]
+            
+            # Create sorted set if it doesn't exist
+            if key not in Database:
+                # Create new sorted set with the member
+                Database[key] = {"type": "zset", "members": [(score, member)]}
+            else:
+                entry = Database[key]
+                
+                # Check if it's actually a sorted set
+                if entry["type"] != "zset":
+                    return  # Ignore wrong type for propagated commands
+                
+                # Check if member already exists
+                members = entry["members"]
+                member_exists = False
+                for i, (existing_score, existing_member) in enumerate(members):
+                    if existing_member == member:
+                        member_exists = True
+                        # Update the score and re-sort
+                        members[i] = (score, member)
+                        members.sort(key=lambda x: (x[0], x[1]))  # Sort by score, then member for stability
+                        break
+                
+                if not member_exists:
+                    # Add new member and keep sorted
+                    members.append((score, member))
+                    members.sort(key=lambda x: (x[0], x[1]))  # Sort by score, then member for stability
 
 def handle_client(connection):
     """Handle a single client connection - can receive multiple commands"""
