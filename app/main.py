@@ -1750,11 +1750,17 @@ def execute_single_command(connection, command, arguments, Database, stream_last
                     response = f"*{n}\r\n" + (n * "$-1\r\n")
                     connection.sendall(response.encode())
                 else:
-                    zset_members = {m: score for score, m in entry["members"]}
+                    # Normalize member names to str for lookup (avoid bytes/str mismatch)
+                    zset_members = {}
+                    for score, m in entry["members"]:
+                        k = m if isinstance(m, str) else m.decode("utf-8")
+                        zset_members[k] = score
                     parts = [f"*{n}\r\n"]
                     for member in members_to_lookup:
-                        if member in zset_members:
-                            latitude, longitude = decode(zset_members[member])
+                        m = member if isinstance(member, str) else member.decode("utf-8")
+                        if m in zset_members:
+                            score_val = zset_members[m]
+                            latitude, longitude = decode(int(score_val))
                             # GEOPOS returns [longitude, latitude] per Redis
                             lon_str = str(longitude)
                             lat_str = str(latitude)
