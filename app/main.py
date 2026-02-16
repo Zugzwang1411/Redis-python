@@ -7,6 +7,7 @@ import base64
 import os
 import struct
 from app.geo_encode import encode
+from app.geo_decode import decode
 
 # Global dictionary to store Condition objects for each stream (for blocking XREAD)
 stream_conditions = {}
@@ -1728,6 +1729,28 @@ def execute_single_command(connection, command, arguments, Database, stream_last
             if not is_replica_connection(connection):
                 propagate_command_to_replicas(command, arguments)
 
+    elif command == "GEOPOS":
+        if len(arguments) != 2:
+            connection.sendall(b"-ERR wrong number of arguments for 'geopos' command\r\n")
+        else:
+            key = arguments[0]
+            member = arguments[1]
+            if key not in Database:
+                connection.sendall(b"*$-1\r\n")
+            else:
+                entry = Database[key]
+                if entry["type"] != "zset":
+                    connection.sendall(b"*$-1\r\n")
+                else:
+                    members = entry["members"]
+                    for score, m in members:
+                        if m == member:
+                            latitude, longitude = decode(score)
+                            response = f"*2\r\n${len(str(latitude))}\r\n{str(latitude)}\r\n${len(str(longitude))}\r\n{str(longitude)}\r\n"
+                            connection.sendall(response.encode())
+                            break
+                    else:
+                        connection.sendall(b"*$-1\r\n")
     else:
         connection.sendall(b"-ERR unknown command\r\n")
 
