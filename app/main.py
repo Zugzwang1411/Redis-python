@@ -6,6 +6,7 @@ import sys
 import base64
 import os
 import struct
+from geo_encode import encode
 
 # Global dictionary to store Condition objects for each stream (for blocking XREAD)
 stream_conditions = {}
@@ -1694,7 +1695,7 @@ def execute_single_command(connection, command, arguments, Database, stream_last
                 pair_str = f"{longitude:.6f},{latitude:.6f}"
                 connection.sendall(f"-ERR invalid longitude,latitude pair {pair_str}\r\n".encode())
                 return
-            score = 0
+            score = encode(latitude, longitude)
             member = arguments[3]
             key = arguments[0]
             if key not in Database:
