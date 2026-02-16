@@ -462,6 +462,7 @@ def validate_command_syntax(command, arguments):
         "SUBSCRIBE": (1,),
         "PUBLISH": (2,),
         "ZADD": (3,),  # ZADD key score member
+        "ZRANK": (2,),  # ZRANK key member
     }
     
     if command not in command_arg_counts:
@@ -1555,6 +1556,31 @@ def execute_single_command(connection, command, arguments, Database, stream_last
             # Propagate ZADD command to replicas (only if this is not a replica connection)
             if not is_replica_connection(connection):
                 propagate_command_to_replicas(command, arguments)
+
+    elif command == "ZRANK":
+        if len(arguments) != 2:
+            connection.sendall(b"-ERR wrong number of arguments for 'zrank' command\r\n")
+        else:
+            key = arguments[0]
+            member = arguments[1]
+            if key not in Database:
+                connection.sendall(b"$-1\r\n")
+            else:
+                entry = Database[key]
+                if entry["type"] != "zset":
+                    connection.sendall(b"$-1\r\n")
+                else:
+                    members = entry["members"]  # Already sorted by (score, member)
+                    rank = None
+                    for i, (_, m) in enumerate(members):
+                        if m == member:
+                            rank = i
+                            break
+                    if rank is None:
+                        connection.sendall(b"$-1\r\n")
+                    else:
+                        response = f":{rank}\r\n"
+                        connection.sendall(response.encode())
 
     else:
         connection.sendall(b"-ERR unknown command\r\n")
