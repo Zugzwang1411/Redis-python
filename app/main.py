@@ -1588,8 +1588,8 @@ def execute_single_command(connection, command, arguments, Database, stream_last
             connection.sendall(b"-ERR wrong number of arguments for 'zrange' command\r\n")
         else:
             key = arguments[0]
-            start = arguments[1]
-            stop = arguments[2]
+            start = int(arguments[1])
+            stop = int(arguments[2])
             if key not in Database:
                 connection.sendall(b"*0\r\n")
             else:
@@ -1598,7 +1598,7 @@ def execute_single_command(connection, command, arguments, Database, stream_last
                     connection.sendall(b"*0\r\n")
                 else:
                     members = entry["members"]  # Already sorted by (score, member)
-                    range_members = members[start:stop]
+                    range_members = members[start:stop+1]
                     response = f"*{len(range_members)}\r\n"
                     for score, member in range_members:
                         response += f"${len(member)}\r\n{member}\r\n"
