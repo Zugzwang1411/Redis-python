@@ -470,6 +470,7 @@ def validate_command_syntax(command, arguments):
         "ZSCORE": (2,),  # ZSCORE key member
         "ZREM": (2,),  # ZREM key member
         "GEOADD": (4,),  # GEOADD key longitude latitude member
+        "GEOPOS": None,  # GEOPOS key member [member ...] - at least 2 args
     }
     
     if command not in command_arg_counts:
@@ -486,6 +487,9 @@ def validate_command_syntax(command, arguments):
             # XREAD has complex syntax, minimal check: at least 3 args (BLOCK timeout STREAMS...)
             if len(arguments) < 1:
                 return False, b"-ERR wrong number of arguments for 'xread' command\r\n"
+        elif command == "GEOPOS":
+            if len(arguments) < 2:
+                return False, b"-ERR wrong number of arguments for 'geopos' command\r\n"
         return True, None
     else:
         # Fixed argument count commands
@@ -1730,27 +1734,34 @@ def execute_single_command(connection, command, arguments, Database, stream_last
                 propagate_command_to_replicas(command, arguments)
 
     elif command == "GEOPOS":
-        if len(arguments) != 2:
+        if len(arguments) < 2:
             connection.sendall(b"-ERR wrong number of arguments for 'geopos' command\r\n")
         else:
             key = arguments[0]
-            member = arguments[1]
+            members_to_lookup = arguments[1:]
+            n = len(members_to_lookup)
             if key not in Database:
-                connection.sendall(b"*$-1\r\n")
+                # Return array of n nils
+                response = f"*{n}\r\n" + (n * "$-1\r\n")
+                connection.sendall(response.encode())
             else:
                 entry = Database[key]
                 if entry["type"] != "zset":
-                    connection.sendall(b"*$-1\r\n")
+                    response = f"*{n}\r\n" + (n * "$-1\r\n")
+                    connection.sendall(response.encode())
                 else:
-                    members = entry["members"]
-                    for score, m in members:
-                        if m == member:
-                            latitude, longitude = decode(score)
-                            response = f"*2\r\n${len(str(latitude))}\r\n{str(latitude)}\r\n${len(str(longitude))}\r\n{str(longitude)}\r\n"
-                            connection.sendall(response.encode())
-                            break
-                    else:
-                        connection.sendall(b"*$-1\r\n")
+                    zset_members = {m: score for score, m in entry["members"]}
+                    parts = [f"*{n}\r\n"]
+                    for member in members_to_lookup:
+                        if member in zset_members:
+                            latitude, longitude = decode(zset_members[member])
+                            # GEOPOS returns [longitude, latitude] per Redis
+                            lon_str = str(longitude)
+                            lat_str = str(latitude)
+                            parts.append(f"*2\r\n${len(lon_str)}\r\n{lon_str}\r\n${len(lat_str)}\r\n{lat_str}\r\n")
+                        else:
+                            parts.append("$-1\r\n")
+                    connection.sendall("".join(parts).encode())
     else:
         connection.sendall(b"-ERR unknown command\r\n")
 
