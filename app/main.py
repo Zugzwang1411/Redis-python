@@ -6,7 +6,7 @@ import sys
 import base64
 import os
 import struct
-from geo_encode import encode
+from app.geo_encode import encode
 
 # Global dictionary to store Condition objects for each stream (for blocking XREAD)
 stream_conditions = {}
