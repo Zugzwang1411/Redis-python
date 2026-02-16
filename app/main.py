@@ -1667,7 +1667,7 @@ def execute_single_command(connection, command, arguments, Database, stream_last
                             members.pop(i)
                             break
                     else:
-                        connection.sendall(b":0\r\n")
+                        connection.sendall(b":1\r\n")
                     response = f":{len(members)}\r\n"
                     connection.sendall(response.encode())
 
