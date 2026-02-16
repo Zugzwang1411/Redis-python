@@ -464,6 +464,8 @@ def validate_command_syntax(command, arguments):
         "ZADD": (3,),  # ZADD key score member
         "ZRANK": (2,),  # ZRANK key member
         "ZRANGE": (3,),  # ZRANGE key start stop
+        "ZCARD": (1,),  # ZCARD key
+        "ZSCORE": (2,),  # ZSCORE key member
     }
     
     if command not in command_arg_counts:
@@ -1622,6 +1624,28 @@ def execute_single_command(connection, command, arguments, Database, stream_last
                 else:
                     response = f":{len(entry['members'])}\r\n"
                     connection.sendall(response.encode())
+    
+    elif command == "ZSCORE":
+        if len(arguments) != 2:
+            connection.sendall(b"-ERR wrong number of arguments for 'zscore' command\r\n")
+        else:
+            key = arguments[0]
+            member = arguments[1]
+            if key not in Database:
+                connection.sendall(b"$-1\r\n")
+            else:
+                entry = Database[key]
+                if entry["type"] != "zset":
+                    connection.sendall(b"$-1\r\n")
+                else:
+                    members = entry["members"]
+                    for score, m in members:
+                        if m == member:
+                            response = f":{score}\r\n"
+                            connection.sendall(response.encode())
+                            break
+                    else:
+                        connection.sendall(b"$-1\r\n")
 
     else:
         connection.sendall(b"-ERR unknown command\r\n")
