@@ -1602,7 +1602,6 @@ def execute_single_command(connection, command, arguments, Database, stream_last
                     response = f"*{len(range_members)}\r\n"
                     for score, member in range_members:
                         response += f"${len(member)}\r\n{member}\r\n"
-                    response += "\r\n"
                     connection.sendall(response.encode())
 
     else:
