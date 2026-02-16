@@ -1641,7 +1641,7 @@ def execute_single_command(connection, command, arguments, Database, stream_last
                     members = entry["members"]
                     for score, m in members:
                         if m == member:
-                            response = f":{score}\r\n"
+                            response = f"${len(str(score))}\r\n{str(score)}\r\n"
                             connection.sendall(response.encode())
                             break
                     else:
