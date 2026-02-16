@@ -1699,6 +1699,7 @@ def execute_single_command(connection, command, arguments, Database, stream_last
             key = arguments[0]
             if key not in Database:
                 Database[key] = {"type": "zset", "members": [(score, member)]}
+                connection.sendall(b":1\r\n")
             else:
                 entry = Database[key]
                 if entry["type"] != "zset":
