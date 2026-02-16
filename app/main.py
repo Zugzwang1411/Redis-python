@@ -467,6 +467,7 @@ def validate_command_syntax(command, arguments):
         "ZCARD": (1,),  # ZCARD key
         "ZSCORE": (2,),  # ZSCORE key member
         "ZREM": (2,),  # ZREM key member
+        "GEOADD": (4,),  # GEOADD key longitude latitude member
     }
     
     if command not in command_arg_counts:
@@ -1673,6 +1674,13 @@ def execute_single_command(connection, command, arguments, Database, stream_last
                         Database[key]["members"] = members
                         if len(members) == 0:
                             del Database[key]
+
+    elif command == "GEOADD":
+        # This stage: only respond with count of elements added (1). No validation or storage yet.
+        if len(arguments) != 4:
+            connection.sendall(b"-ERR wrong number of arguments for 'geoadd' command\r\n")
+        else:
+            connection.sendall(b":1\r\n")
 
     else:
         connection.sendall(b"-ERR unknown command\r\n")
