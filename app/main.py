@@ -1694,7 +1694,37 @@ def execute_single_command(connection, command, arguments, Database, stream_last
                 pair_str = f"{longitude:.6f},{latitude:.6f}"
                 connection.sendall(f"-ERR invalid longitude,latitude pair {pair_str}\r\n".encode())
                 return
-            connection.sendall(b":1\r\n")
+            score = 0
+            member = arguments[3]
+            key = arguments[0]
+            if key not in Database:
+                Database[key] = {"type": "zset", "members": [(score, member)]}
+            else:
+                entry = Database[key]
+                if entry["type"] != "zset":
+                    connection.sendall(b"-ERR WRONGTYPE Operation against a key holding the wrong kind of value\r\n")
+                    return
+                members = entry["members"]
+                member_exists = False
+                for i, (existing_score, existing_member) in enumerate(members):
+                    if existing_member == member:
+                        member_exists = True
+                        # Update the score and re-sort
+                        members[i] = (score, member)
+                        members.sort(key=lambda x: (x[0], x[1]))  # Sort by score, then member for stability
+                        break
+                if not member_exists:
+                    # Add new member and keep sorted
+                    members.append((score, member))
+                    members.sort(key=lambda x: (x[0], x[1]))  # Sort by score, then member for stability
+                    new_members_count = 1
+                else:
+                    # Member already exists, so no new members added
+                    new_members_count = 0
+                response = f":{new_members_count}\r\n"
+                connection.sendall(response.encode())
+            if not is_replica_connection(connection):
+                propagate_command_to_replicas(command, arguments)
 
     else:
         connection.sendall(b"-ERR unknown command\r\n")
