@@ -1662,14 +1662,17 @@ def execute_single_command(connection, command, arguments, Database, stream_last
                     connection.sendall(b":0\r\n")
                 else:
                     members = entry["members"]
+                    removed_count = 0
                     for i, (score, m) in enumerate(members):
                         if m == member:
                             members.pop(i)
-                            break
-                    else:
-                        connection.sendall(b":1\r\n")
-                    response = f":{len(members)}\r\n"
+                            removed_count += 1
+                    response = f":{removed_count}\r\n"
                     connection.sendall(response.encode())
+                    if removed_count > 0:
+                        Database[key]["members"] = members
+                        if len(members) == 0:
+                            del Database[key]
 
     else:
         connection.sendall(b"-ERR unknown command\r\n")
