@@ -1599,13 +1599,9 @@ def execute_single_command(connection, command, arguments, Database, stream_last
                 else:
                     members = entry["members"]  # Already sorted by (score, member)
                     if start < 0:
-                        start = len(members) + start
-                    if start > len(members):
-                        start = 0
+                        start = max(0, len(members) + start)
                     if stop < 0:
-                        stop = len(members) + stop
-                    if stop > len(members):
-                        stop = 0
+                        stop = max(0, len(members) + stop)
                     range_members = members[start:stop+1]
                     response = f"*{len(range_members)}\r\n"
                     for score, member in range_members:
