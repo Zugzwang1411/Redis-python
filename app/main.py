@@ -1676,10 +1676,24 @@ def execute_single_command(connection, command, arguments, Database, stream_last
                             del Database[key]
 
     elif command == "GEOADD":
-        # This stage: only respond with count of elements added (1). No validation or storage yet.
         if len(arguments) != 4:
             connection.sendall(b"-ERR wrong number of arguments for 'geoadd' command\r\n")
         else:
+            try:
+                longitude = float(arguments[1])
+                latitude = float(arguments[2])
+            except (ValueError, TypeError):
+                connection.sendall(b"-ERR invalid longitude,latitude pair\r\n")
+                return
+            # Valid longitude: -180 to +180 (inclusive). Valid latitude: -85.05112878 to +85.05112878 (inclusive)
+            LONGITUDE_MIN, LONGITUDE_MAX = -180.0, 180.0
+            LATITUDE_MIN, LATITUDE_MAX = -85.05112878, 85.05112878
+            lon_ok = LONGITUDE_MIN <= longitude <= LONGITUDE_MAX
+            lat_ok = LATITUDE_MIN <= latitude <= LATITUDE_MAX
+            if not lon_ok or not lat_ok:
+                pair_str = f"{longitude:.6f},{latitude:.6f}"
+                connection.sendall(f"-ERR invalid longitude,latitude pair {pair_str}\r\n".encode())
+                return
             connection.sendall(b":1\r\n")
 
     else:
