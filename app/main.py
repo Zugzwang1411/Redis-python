@@ -1741,13 +1741,13 @@ def execute_single_command(connection, command, arguments, Database, stream_last
             members_to_lookup = arguments[1:]
             n = len(members_to_lookup)
             if key not in Database:
-                # Return array of n nils
-                response = f"*{n}\r\n" + (n * "$-1\r\n")
+                # Return array of n null arrays (spec: *-1\r\n per missing element)
+                response = f"*{n}\r\n" + (n * "*-1\r\n")
                 connection.sendall(response.encode())
             else:
                 entry = Database[key]
                 if entry["type"] != "zset":
-                    response = f"*{n}\r\n" + (n * "$-1\r\n")
+                    response = f"*{n}\r\n" + (n * "*-1\r\n")
                     connection.sendall(response.encode())
                 else:
                     # Normalize member names to str for lookup (avoid bytes/str mismatch)
@@ -1766,7 +1766,8 @@ def execute_single_command(connection, command, arguments, Database, stream_last
                             lat_str = str(latitude)
                             parts.append(f"*2\r\n${len(lon_str)}\r\n{lon_str}\r\n${len(lat_str)}\r\n{lat_str}\r\n")
                         else:
-                            parts.append("$-1\r\n")
+                            # Missing location: null array (*-1\r\n) per spec
+                            parts.append("*-1\r\n")
                     connection.sendall("".join(parts).encode())
     else:
         connection.sendall(b"-ERR unknown command\r\n")
