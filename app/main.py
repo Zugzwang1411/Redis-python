@@ -1870,12 +1870,18 @@ def execute_single_command(connection, command, arguments, Database, stream_last
                     connection.sendall(response.encode())
 
     elif command == "ACL":
-        if len(arguments) != 1:
+        if len(arguments) < 1:
             connection.sendall(b"-ERR wrong number of arguments for 'acl' command\r\n")
         else:
-            key = arguments[0]
-            if key == "WHOAMI":
+            subcommand = str(arguments[0]).upper()
+            if subcommand == "WHOAMI" and len(arguments) == 1:
                 connection.sendall(b"$7\r\ndefault\r\n")
+            elif subcommand == "GETUSER" and len(arguments) == 2:
+                username = arguments[1]
+                if username == "default":
+                    connection.sendall(b"*2\r\n$5\r\nflags\r\n*0\r\n")
+                else:
+                    connection.sendall(f"-ERR User '{username}' does not exist\r\n".encode())
             else:
                 connection.sendall(b"-ERR unknown command\r\n")
 
