@@ -6,6 +6,7 @@ import sys
 import base64
 import os
 import struct
+import math
 from app.geo_encode import encode
 from app.geo_decode import decode
 
@@ -471,6 +472,7 @@ def validate_command_syntax(command, arguments):
         "ZREM": (2,),  # ZREM key member
         "GEOADD": (4,),  # GEOADD key longitude latitude member
         "GEOPOS": None,  # GEOPOS key member [member ...] - at least 2 args
+        "GEODIST": (3,),  # GEODIST key member1 member2
     }
     
     if command not in command_arg_counts:
@@ -1769,6 +1771,46 @@ def execute_single_command(connection, command, arguments, Database, stream_last
                             # Missing location: null array (*-1\r\n) per spec
                             parts.append("*-1\r\n")
                     connection.sendall("".join(parts).encode())
+
+    elif command == "GEODIST":
+        if len(arguments) != 3:
+            connection.sendall(b"-ERR wrong number of arguments for 'geodist' command\r\n")
+        else:
+            key = arguments[0]
+            member1 = arguments[1]
+            member2 = arguments[2]
+            if key not in Database:
+                connection.sendall(b"$-1\r\n")
+            else:
+                entry = Database[key]
+                if entry["type"] != "zset":
+                    connection.sendall(b"$-1\r\n")
+                else:
+                    zset_members = {}
+                    for score, m in entry["members"]:
+                        k = m if isinstance(m, str) else m.decode("utf-8")
+                        zset_members[k] = score
+                    m1 = member1 if isinstance(member1, str) else member1.decode("utf-8")
+                    m2 = member2 if isinstance(member2, str) else member2.decode("utf-8")
+                    if m1 not in zset_members or m2 not in zset_members:
+                        connection.sendall(b"$-1\r\n")
+                    else:
+                        lat1, lon1 = decode(int(zset_members[m1]))
+                        lat2, lon2 = decode(int(zset_members[m2]))
+                        # Haversine formula; Earth radius in meters (Redis value)
+                        R = 6372797.560856
+                        lat1_r = math.radians(lat1)
+                        lon1_r = math.radians(lon1)
+                        lat2_r = math.radians(lat2)
+                        lon2_r = math.radians(lon2)
+                        dlat = lat2_r - lat1_r
+                        dlon = lon2_r - lon1_r
+                        a = math.sin(dlat / 2) ** 2 + math.cos(lat1_r) * math.cos(lat2_r) * math.sin(dlon / 2) ** 2
+                        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+                        distance = R * c
+                        dist_str = f"{round(distance, 4)}"
+                        connection.sendall(f"${len(dist_str)}\r\n{dist_str}\r\n".encode())
+
     else:
         connection.sendall(b"-ERR unknown command\r\n")
 
