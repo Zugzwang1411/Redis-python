@@ -1879,7 +1879,7 @@ def execute_single_command(connection, command, arguments, Database, stream_last
             elif subcommand == "GETUSER" and len(arguments) == 2:
                 username = arguments[1]
                 if username == "default":
-                    connection.sendall(b"*4\r\n$5\r\nflags\r\n*1\r\n$6\r\nnopass\r\n$9\r\npasswords\r\n$0\r\n")
+                    connection.sendall(b"*4\r\n$5\r\nflags\r\n*1\r\n$6\r\nnopass\r\n$9\r\npasswords\r\n$0\r\n\r\n")
                 else:
                     connection.sendall(f"-ERR User '{username}' does not exist\r\n".encode())
             else:
