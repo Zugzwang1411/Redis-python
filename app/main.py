@@ -473,6 +473,7 @@ def validate_command_syntax(command, arguments):
         "GEOADD": (4,),  # GEOADD key longitude latitude member
         "GEOPOS": None,  # GEOPOS key member [member ...] - at least 2 args
         "GEODIST": (3,),  # GEODIST key member1 member2
+        "GEOSEARCH": None,  # GEOSEARCH key FROMLONLAT lon lat BYRADIUS radius unit - at least 7 args
     }
     
     if command not in command_arg_counts:
@@ -492,6 +493,9 @@ def validate_command_syntax(command, arguments):
         elif command == "GEOPOS":
             if len(arguments) < 2:
                 return False, b"-ERR wrong number of arguments for 'geopos' command\r\n"
+        elif command == "GEOSEARCH":
+            if len(arguments) < 7:
+                return False, b"-ERR wrong number of arguments for 'geosearch' command\r\n"
         return True, None
     else:
         # Fixed argument count commands
@@ -1810,6 +1814,60 @@ def execute_single_command(connection, command, arguments, Database, stream_last
                         distance = R * c
                         dist_str = f"{round(distance, 4)}"
                         connection.sendall(f"${len(dist_str)}\r\n{dist_str}\r\n".encode())
+
+    elif command == "GEOSEARCH":
+        if len(arguments) < 7:
+            connection.sendall(b"-ERR wrong number of arguments for 'geosearch' command\r\n")
+        else:
+            key = arguments[0]
+            if arguments[1].upper() != "FROMLONLAT" or arguments[4].upper() != "BYRADIUS":
+                connection.sendall(b"-ERR invalid GEOSEARCH options\r\n")
+                return
+            try:
+                lon_center = float(arguments[2])
+                lat_center = float(arguments[3])
+                radius_val = float(arguments[5])
+            except (ValueError, TypeError):
+                connection.sendall(b"-ERR invalid argument for GEOSEARCH\r\n")
+                return
+            unit = (arguments[6] or "m").lower()
+            if unit == "m":
+                radius_m = radius_val
+            elif unit == "km":
+                radius_m = radius_val * 1000
+            elif unit == "mi":
+                radius_m = radius_val * 1609.34
+            elif unit == "ft":
+                radius_m = radius_val * 0.3048
+            else:
+                radius_m = radius_val
+            if key not in Database:
+                connection.sendall(b"*0\r\n")
+            else:
+                entry = Database[key]
+                if entry["type"] != "zset":
+                    connection.sendall(b"*0\r\n")
+                else:
+                    R = 6372797.560856
+                    results = []
+                    for score, member in entry["members"]:
+                        lat, lon = decode(int(score))
+                        lat_r = math.radians(lat)
+                        lon_r = math.radians(lon)
+                        lat_c_r = math.radians(lat_center)
+                        lon_c_r = math.radians(lon_center)
+                        dlat = lat_r - lat_c_r
+                        dlon = lon_r - lon_c_r
+                        a = math.sin(dlat / 2) ** 2 + math.cos(lat_c_r) * math.cos(lat_r) * math.sin(dlon / 2) ** 2
+                        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+                        dist = R * c
+                        if dist <= radius_m:
+                            m = member if isinstance(member, str) else member.decode("utf-8")
+                            results.append(m)
+                    response = f"*{len(results)}\r\n"
+                    for m in results:
+                        response += f"${len(m)}\r\n{m}\r\n"
+                    connection.sendall(response.encode())
 
     else:
         connection.sendall(b"-ERR unknown command\r\n")
