@@ -1875,7 +1875,7 @@ def execute_single_command(connection, command, arguments, Database, stream_last
         else:
             key = arguments[0]
             if key == "WHOAMI":
-                connection.sendall(b"+default\r\n")
+                connection.sendall(b"$7\r\ndefault\r\n")
             else:
                 connection.sendall(b"-ERR unknown command\r\n")
 
