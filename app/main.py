@@ -1869,6 +1869,16 @@ def execute_single_command(connection, command, arguments, Database, stream_last
                         response += f"${len(m)}\r\n{m}\r\n"
                     connection.sendall(response.encode())
 
+    elif command == "ACL":
+        if len(arguments) != 1:
+            connection.sendall(b"-ERR wrong number of arguments for 'acl' command\r\n")
+        else:
+            key = arguments[0]
+            if key == "WHOAMI":
+                connection.sendall(b"+default\r\n")
+            else:
+                connection.sendall(b"-ERR unknown command\r\n")
+
     else:
         connection.sendall(b"-ERR unknown command\r\n")
 
