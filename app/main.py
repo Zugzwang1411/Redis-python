@@ -656,10 +656,33 @@ def execute_single_command(connection, command, arguments, Database, stream_last
                     # Default user has nopass: auto-authenticate this connection
                     authenticated_connections.add(connection)
                 else:
-                    connection.sendall(b"-NOAUTH Authentication required.\r\n")
-                    return
+                    # Allow AUTH so unauthenticated clients can authenticate
+                    if command != "AUTH":
+                        connection.sendall(b"-NOAUTH Authentication required.\r\n")
+                        return
 
-    if command == "PING":
+    if command == "AUTH":
+        if len(arguments) == 1:
+            username = "default"
+            password = str(arguments[0])
+        elif len(arguments) == 2:
+            username = str(arguments[0])
+            password = str(arguments[1])
+        else:
+            connection.sendall(b"-ERR wrong number of arguments for 'auth' command\r\n")
+        if username not in acl_users:
+            connection.sendall(b"-ERR invalid username-password pair\r\n")
+        else:
+            password_bytes = password.encode("utf-8")
+            h = hashlib.sha256(password_bytes).hexdigest()
+            if h in acl_users[username]:
+                with authenticated_connections_lock:
+                    authenticated_connections.add(connection)
+                connection.sendall(b"+OK\r\n")
+            else:
+                connection.sendall(b"-ERR invalid username-password pair\r\n")
+
+    elif command == "PING":
         if not in_subscribed_mode[0]:
             connection.sendall(b"+PONG\r\n")
         else:
