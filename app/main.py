@@ -1981,9 +1981,14 @@ def execute_single_command(connection, command, arguments, Database, stream_last
                     connection.sendall(b"*0\r\n")
                 else:
                     values = entry["values"]
-                    response_values = values[start:stop+1]
-                    response = f"*{len(response_values)}\r\n"
-                    for value in response_values:
+                    size_of_list = len(values)
+                    if start < 0:
+                        start = max(0, size_of_list + start)
+                    if stop < 0:
+                        stop = max(0, size_of_list + stop)
+                    range_values = values[start:stop+1]
+                    response = f"*{len(range_values)}\r\n"
+                    for value in range_values:
                         response += f"${len(value)}\r\n{value}\r\n"
                     connection.sendall(response.encode())
 
