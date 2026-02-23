@@ -1992,6 +1992,21 @@ def execute_single_command(connection, command, arguments, Database, stream_last
                         response += f"${len(value)}\r\n{value}\r\n"
                     connection.sendall(response.encode())
 
+    elif command == "LPUSH":
+        if len(arguments) < 2:
+            connection.sendall(b"-ERR wrong number of arguments for 'lpush' command\r\n")
+        else:
+            key = arguments[0]
+            values = arguments[1:]
+            if key not in Database:
+                Database[key] = {"type": "list", "values": values}
+            else:
+                Database[key]["values"].insert(0, values)
+            response = f":{len(Database[key]['values'])}\r\n"
+            connection.sendall(response.encode())
+            if not is_replica_connection(connection):
+                propagate_command_to_replicas(command, arguments)
+
     else:
         connection.sendall(b"-ERR unknown command\r\n")
 
