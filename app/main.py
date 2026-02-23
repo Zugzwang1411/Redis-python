@@ -2028,6 +2028,10 @@ def execute_single_command(connection, command, arguments, Database, stream_last
             connection.sendall(b"-ERR wrong number of arguments for 'lpop' command\r\n")
         else:
             key = arguments[0]
+            if len(arguments) == 2:
+                count = int(arguments[1])
+            else:
+                count = 1
             if key not in Database:
                 connection.sendall(b"$-1\r\n")
             else:
@@ -2035,7 +2039,9 @@ def execute_single_command(connection, command, arguments, Database, stream_last
                 if entry["type"] != "list":
                     connection.sendall(b"$-1\r\n")
                 else:
-                    value = entry["values"].pop(0)
+                    value = entry["values"]
+                    for _ in range(count):
+                        value = entry["values"].pop(0)
                     response = f"${len(value)}\r\n{value}\r\n"
                     connection.sendall(response.encode())
                     if not is_replica_connection(connection):
