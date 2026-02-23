@@ -2008,6 +2008,21 @@ def execute_single_command(connection, command, arguments, Database, stream_last
             if not is_replica_connection(connection):
                 propagate_command_to_replicas(command, arguments)
 
+    elif command == "LLEN":
+        if len(arguments) != 1:
+            connection.sendall(b"-ERR wrong number of arguments for 'llen' command\r\n")
+        else:
+            key = arguments[0]
+            if key not in Database:
+                connection.sendall(b":0\r\n")
+            else:
+                entry = Database[key]
+                if entry["type"] != "list":
+                    connection.sendall(b":0\r\n")
+                else:
+                    response = f":{len(entry['values'])}\r\n"
+                    connection.sendall(response.encode())
+
     else:
         connection.sendall(b"-ERR unknown command\r\n")
 
