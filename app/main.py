@@ -1999,9 +1999,10 @@ def execute_single_command(connection, command, arguments, Database, stream_last
             key = arguments[0]
             values = arguments[1:]
             if key not in Database:
-                Database[key] = {"type": "list", "values": values}
+                Database[key] = {"type": "list", "values": list(values)}
             else:
-                Database[key]["values"].insert(0, values)
+                for v in values:
+                    Database[key]["values"].insert(0, v)
             response = f":{len(Database[key]['values'])}\r\n"
             connection.sendall(response.encode())
             if not is_replica_connection(connection):
