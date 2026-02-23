@@ -680,7 +680,7 @@ def execute_single_command(connection, command, arguments, Database, stream_last
                     authenticated_connections.add(connection)
                 connection.sendall(b"+OK\r\n")
             else:
-                connection.sendall(b"-ERR invalid username-password pair\r\n")
+                connection.sendall(b"-WRONGPASS invalid username-password pair or user is disabled.\r\n")
 
     elif command == "PING":
         if not in_subscribed_mode[0]:
@@ -1950,26 +1950,6 @@ def execute_single_command(connection, command, arguments, Database, stream_last
                 connection.sendall(b"+OK\r\n")
             else:
                 connection.sendall(b"-ERR unknown command\r\n")
-    
-    elif command == "AUTH":
-        if len(arguments) != 2:
-            connection.sendall(b"-ERR wrong number of arguments for 'auth' command\r\n")
-        else:
-            username = str(arguments[0])
-            password = str(arguments[1])
-            if username not in acl_users:
-                connection.sendall(f"-ERR User '{username}' does not exist\r\n".encode())
-            else:
-                passwords = acl_users[username]
-                if not passwords:
-                    connection.sendall(b"-ERR operation requires authentication\r\n")
-                else:
-                    password_bytes = password.encode("utf-8") if isinstance(password, str) else password
-                    h = hashlib.sha256(password_bytes).hexdigest()
-                    if h in passwords:
-                        connection.sendall(b"+OK\r\n")
-                    else:
-                        connection.sendall(b"-WRONGPASS invalid username-password pair or user is disabled.\r\n")
 
     else:
         connection.sendall(b"-ERR unknown command\r\n")
