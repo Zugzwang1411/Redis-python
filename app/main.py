@@ -1965,6 +1965,27 @@ def execute_single_command(connection, command, arguments, Database, stream_last
             connection.sendall(response.encode())
             if not is_replica_connection(connection):
                 propagate_command_to_replicas(command, arguments)
+    
+    elif command == "LRANGE":
+        if len(arguments) != 3:
+            connection.sendall(b"-ERR wrong number of arguments for 'lrange' command\r\n")
+        else:
+            key = arguments[0]
+            start = arguments[1]
+            stop = arguments[2]
+            if key not in Database:
+                connection.sendall(b"*0\r\n")
+            else:
+                entry = Database[key]
+                if entry["type"] != "list":
+                    connection.sendall(b"*0\r\n")
+                else:
+                    values = entry["values"]
+                    response_values = values[start:stop+1]
+                    response = f"*{len(response_values)}\r\n"
+                    for value in response_values:
+                        response += f"${len(value)}\r\n{value}\r\n"
+                    connection.sendall(response.encode())
 
     else:
         connection.sendall(b"-ERR unknown command\r\n")
