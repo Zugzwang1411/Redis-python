@@ -1971,8 +1971,8 @@ def execute_single_command(connection, command, arguments, Database, stream_last
             connection.sendall(b"-ERR wrong number of arguments for 'lrange' command\r\n")
         else:
             key = arguments[0]
-            start = arguments[1]
-            stop = arguments[2]
+            start = int(arguments[1])
+            stop = int(arguments[2])
             if key not in Database:
                 connection.sendall(b"*0\r\n")
             else:
