@@ -2024,26 +2024,45 @@ def execute_single_command(connection, command, arguments, Database, stream_last
                     connection.sendall(response.encode())
 
     elif command == "LPOP":
-        if len(arguments) != 1:
+        if len(arguments) < 1 or len(arguments) > 2:
             connection.sendall(b"-ERR wrong number of arguments for 'lpop' command\r\n")
         else:
             key = arguments[0]
-            if len(arguments) == 2:
-                count = int(arguments[1])
-            else:
-                count = 1
+            count = int(arguments[1]) if len(arguments) == 2 else None
             if key not in Database:
-                connection.sendall(b"$-1\r\n")
+                if count is not None:
+                    connection.sendall(b"*0\r\n")
+                else:
+                    connection.sendall(b"$-1\r\n")
             else:
                 entry = Database[key]
                 if entry["type"] != "list":
-                    connection.sendall(b"$-1\r\n")
+                    if count is not None:
+                        connection.sendall(b"*0\r\n")
+                    else:
+                        connection.sendall(b"$-1\r\n")
                 else:
-                    value = entry["values"]
-                    for _ in range(count):
-                        value = entry["values"].pop(0)
-                    response = f"${len(value)}\r\n{value}\r\n"
-                    connection.sendall(response.encode())
+                    values = entry["values"]
+                    if count is not None:
+                        n = min(count, len(values))
+                        popped = [values.pop(0) for _ in range(n)]
+                        if not values:
+                            del Database[key]
+                        response = f"*{len(popped)}\r\n"
+                        for v in popped:
+                            v_str = v if isinstance(v, str) else v.decode("utf-8")
+                            response += f"${len(v_str)}\r\n{v_str}\r\n"
+                        connection.sendall(response.encode())
+                    else:
+                        # LPOP key: return single bulk string or nil
+                        if not values:
+                            connection.sendall(b"$-1\r\n")
+                        else:
+                            v = values.pop(0)
+                            if not values:
+                                del Database[key]
+                            v_str = v if isinstance(v, str) else v.decode("utf-8")
+                            connection.sendall(f"${len(v_str)}\r\n{v_str}\r\n".encode())
                     if not is_replica_connection(connection):
                         propagate_command_to_replicas(command, arguments)
 
