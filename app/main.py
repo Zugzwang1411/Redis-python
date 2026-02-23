@@ -1,3 +1,4 @@
+import hashlib
 import socket
 import threading
 import time
@@ -44,6 +45,10 @@ replica_socket_locks_lock = threading.Lock()
 # Key: channel_name (str), Value: set of connections subscribed to that channel
 channel_subscribers = {}
 channel_subscribers_lock = threading.Lock()
+
+# ACL user table: username (str) -> list of SHA-256 password hashes (empty = nopass)
+# "default" must always exist (created at startup).
+acl_users = {"default": []}
 
 # RDB configuration
 rdb_dir = ""
@@ -1877,11 +1882,31 @@ def execute_single_command(connection, command, arguments, Database, stream_last
             if subcommand == "WHOAMI" and len(arguments) == 1:
                 connection.sendall(b"$7\r\ndefault\r\n")
             elif subcommand == "GETUSER" and len(arguments) == 2:
-                username = arguments[1]
-                if username == "default":
-                    connection.sendall(b"*4\r\n$5\r\nflags\r\n*1\r\n$6\r\nnopass\r\n$9\r\npasswords\r\n*0\r\n")
-                else:
+                username = str(arguments[1])
+                if username not in acl_users:
                     connection.sendall(f"-ERR User '{username}' does not exist\r\n".encode())
+                else:
+                    passwords = acl_users[username]
+                    if not passwords:
+                        connection.sendall(b"*4\r\n$5\r\nflags\r\n*1\r\n$6\r\nnopass\r\n$9\r\npasswords\r\n*0\r\n")
+                    else:
+                        parts = [b"*4\r\n$5\r\nflags\r\n*0\r\n$9\r\npasswords\r\n"]
+                        parts.append(f"*{len(passwords)}\r\n".encode())
+                        for h in passwords:
+                            parts.append(f"${len(h)}\r\n{h}\r\n".encode())
+                        connection.sendall(b"".join(parts))
+            elif subcommand == "SETUSER" and len(arguments) >= 2:
+                username = str(arguments[1])
+                if username not in acl_users:
+                    acl_users[username] = []
+                for rule in arguments[2:]:
+                    rule_str = str(rule)
+                    if rule_str.startswith(">"):
+                        password = rule_str[1:]
+                        password_bytes = password.encode("utf-8") if isinstance(password, str) else password
+                        h = hashlib.sha256(password_bytes).hexdigest()
+                        acl_users[username].append(h)
+                connection.sendall(b"+OK\r\n")
             else:
                 connection.sendall(b"-ERR unknown command\r\n")
 
