@@ -50,6 +50,11 @@ channel_subscribers_lock = threading.Lock()
 # "default" must always exist (created at startup).
 acl_users = {"default": []}
 
+# Connections that are authenticated (e.g. as default when nopass, or after AUTH).
+# New connections are auto-authenticated only if default user has no passwords.
+authenticated_connections = set()
+authenticated_connections_lock = threading.Lock()
+
 # RDB configuration
 rdb_dir = ""
 rdb_dbfilename = "dump.rdb"
@@ -643,6 +648,17 @@ def propagate_command_to_replicas(command, arguments):
 
 def execute_single_command(connection, command, arguments, Database, stream_last_ids, subscribed_channels=None, in_subscribed_mode=None):
     """Execute a single command against Database, writing responses to the provided connection."""
+    # Enforce authentication for non-replica connections
+    if not is_replica_connection(connection):
+        with authenticated_connections_lock:
+            if connection not in authenticated_connections:
+                if not acl_users.get("default", []):
+                    # Default user has nopass: auto-authenticate this connection
+                    authenticated_connections.add(connection)
+                else:
+                    connection.sendall(b"-NOAUTH Authentication required.\r\n")
+                    return
+
     if command == "PING":
         if not in_subscribed_mode[0]:
             connection.sendall(b"+PONG\r\n")
@@ -2189,7 +2205,9 @@ def handle_client(connection):
         # Not in transaction: execute immediately
         execute_single_command(connection, command, arguments, Database, stream_last_ids, subscribed_channels, in_subscribed_mode)
     
-    # Clean up: remove connection from all channel subscriptions
+    # Clean up: remove connection from authenticated set and channel subscriptions
+    with authenticated_connections_lock:
+        authenticated_connections.discard(connection)
     with channel_subscribers_lock:
         for channel in list(channel_subscribers.keys()):
             channel_subscribers[channel].discard(connection)
