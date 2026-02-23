@@ -479,6 +479,8 @@ def validate_command_syntax(command, arguments):
         "GEOPOS": None,  # GEOPOS key member [member ...] - at least 2 args
         "GEODIST": (3,),  # GEODIST key member1 member2
         "GEOSEARCH": None,  # GEOSEARCH key FROMLONLAT lon lat BYRADIUS radius unit - at least 7 args
+        "ACL": None,  # ACL command
+        "AUTH": (2,),  # AUTH command
     }
     
     if command not in command_arg_counts:
@@ -1909,6 +1911,26 @@ def execute_single_command(connection, command, arguments, Database, stream_last
                 connection.sendall(b"+OK\r\n")
             else:
                 connection.sendall(b"-ERR unknown command\r\n")
+    
+    elif command == "AUTH":
+        if len(arguments) != 2:
+            connection.sendall(b"-ERR wrong number of arguments for 'auth' command\r\n")
+        else:
+            username = str(arguments[0])
+            password = str(arguments[1])
+            if username not in acl_users:
+                connection.sendall(f"-ERR User '{username}' does not exist\r\n".encode())
+            else:
+                passwords = acl_users[username]
+                if not passwords:
+                    connection.sendall(b"-ERR operation requires authentication\r\n")
+                else:
+                    password_bytes = password.encode("utf-8") if isinstance(password, str) else password
+                    h = hashlib.sha256(password_bytes).hexdigest()
+                    if h in passwords:
+                        connection.sendall(b"+OK\r\n")
+                    else:
+                        connection.sendall(b"-ERR WRONGPASS invalid username-password pair or user is disabled.\r\n")
 
     else:
         connection.sendall(b"-ERR unknown command\r\n")
