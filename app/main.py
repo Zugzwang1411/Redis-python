@@ -1930,7 +1930,7 @@ def execute_single_command(connection, command, arguments, Database, stream_last
                     if h in passwords:
                         connection.sendall(b"+OK\r\n")
                     else:
-                        connection.sendall(b"-ERR WRONGPASS invalid username-password pair or user is disabled.\r\n")
+                        connection.sendall(b"-WRONGPASS invalid username-password pair or user is disabled.\r\n")
 
     else:
         connection.sendall(b"-ERR unknown command\r\n")
