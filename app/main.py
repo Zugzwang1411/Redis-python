@@ -8,12 +8,16 @@ import base64
 import os
 import struct
 import math
+from collections import deque
 from app.geo_encode import encode
 from app.geo_decode import decode
 
 # Global dictionary to store Condition objects for each stream (for blocking XREAD)
 stream_conditions = {}
 stream_conditions_lock = threading.Lock()
+
+# BLPOP: per-list-key queue of (connection, condition, result_holder) for FIFO wake order
+blpop_waiters = {}
 
 # Global database shared across all client threads
 global_database = {}
@@ -1957,15 +1961,31 @@ def execute_single_command(connection, command, arguments, Database, stream_last
         else:
             key = arguments[0]
             values = arguments[1:]
-            if key not in Database:
-                Database[key] = {"type": "list", "values": values}
-            else:
-                Database[key]["values"].extend(values)
-            response = f":{len(Database[key]['values'])}\r\n"
-            connection.sendall(response.encode())
-            if not is_replica_connection(connection):
-                propagate_command_to_replicas(command, arguments)
-    
+            waiter_cond = None
+            with global_database_lock:
+                if key not in Database:
+                    Database[key] = {"type": "list", "values": values}
+                else:
+                    Database[key]["values"].extend(values)
+                response = f":{len(Database[key]['values'])}\r\n"
+                connection.sendall(response.encode())
+                if not is_replica_connection(connection):
+                    propagate_command_to_replicas(command, arguments)
+                # Wake one BLPOP waiter if any (FIFO)
+                if key in blpop_waiters and len(blpop_waiters[key]) > 0:
+                    conn, cond, result_holder = blpop_waiters[key].popleft()
+                    entry = Database[key]
+                    list_values = entry["values"]
+                    value = list_values.pop(0)
+                    if not list_values:
+                        del Database[key]
+                    result_holder[0] = (key, value)
+                    waiter_cond = cond
+            if waiter_cond is not None:
+                waiter_cond.acquire()
+                waiter_cond.notify()
+                waiter_cond.release()
+
     elif command == "LRANGE":
         if len(arguments) != 3:
             connection.sendall(b"-ERR wrong number of arguments for 'lrange' command\r\n")
@@ -1998,15 +2018,31 @@ def execute_single_command(connection, command, arguments, Database, stream_last
         else:
             key = arguments[0]
             values = arguments[1:]
-            if key not in Database:
-                Database[key] = {"type": "list", "values": list(values)}
-            else:
-                for v in values:
-                    Database[key]["values"].insert(0, v)
-            response = f":{len(Database[key]['values'])}\r\n"
-            connection.sendall(response.encode())
-            if not is_replica_connection(connection):
-                propagate_command_to_replicas(command, arguments)
+            waiter_cond = None
+            with global_database_lock:
+                if key not in Database:
+                    Database[key] = {"type": "list", "values": list(values)}
+                else:
+                    for v in values:
+                        Database[key]["values"].insert(0, v)
+                response = f":{len(Database[key]['values'])}\r\n"
+                connection.sendall(response.encode())
+                if not is_replica_connection(connection):
+                    propagate_command_to_replicas(command, arguments)
+                # Wake one BLPOP waiter if any (FIFO)
+                if key in blpop_waiters and len(blpop_waiters[key]) > 0:
+                    conn, cond, result_holder = blpop_waiters[key].popleft()
+                    entry = Database[key]
+                    list_values = entry["values"]
+                    value = list_values.pop(0)
+                    if not list_values:
+                        del Database[key]
+                    result_holder[0] = (key, value)
+                    waiter_cond = cond
+            if waiter_cond is not None:
+                waiter_cond.acquire()
+                waiter_cond.notify()
+                waiter_cond.release()
 
     elif command == "LLEN":
         if len(arguments) != 1:
@@ -2065,6 +2101,56 @@ def execute_single_command(connection, command, arguments, Database, stream_last
                             connection.sendall(f"${len(v_str)}\r\n{v_str}\r\n".encode())
                     if not is_replica_connection(connection):
                         propagate_command_to_replicas(command, arguments)
+
+    elif command == "BLPOP":
+        if len(arguments) < 2:
+            connection.sendall(b"-ERR wrong number of arguments for 'blpop' command\r\n")
+        else:
+            key = arguments[0]
+            try:
+                _timeout = int(arguments[1])  # 0 = wait indefinitely (this stage)
+            except ValueError:
+                connection.sendall(b"-ERR value is not an integer or out of range\r\n")
+                return
+
+            def send_blpop_response(conn, list_key, value):
+                v_str = value if isinstance(value, str) else value.decode("utf-8")
+                key_str = list_key if isinstance(list_key, str) else list_key.decode("utf-8")
+                resp = f"*2\r\n${len(key_str)}\r\n{key_str}\r\n${len(v_str)}\r\n{v_str}\r\n"
+                conn.sendall(resp.encode())
+
+            with global_database_lock:
+                if key in Database:
+                    entry = Database[key]
+                    if entry["type"] != "list":
+                        connection.sendall(b"-ERR WRONGTYPE Operation against a key holding the wrong kind of value\r\n")
+                        return
+                    values = entry["values"]
+                    if len(values) > 0:
+                        v = values.pop(0)
+                        if not values:
+                            del Database[key]
+                        send_blpop_response(connection, key, v)
+                        if not is_replica_connection(connection):
+                            propagate_command_to_replicas(command, arguments)
+                        return
+
+                # Blocking path: list empty or key missing
+                result_holder = [None]
+                cond = threading.Condition()
+                if key not in blpop_waiters:
+                    blpop_waiters[key] = deque()
+                blpop_waiters[key].append((connection, cond, result_holder))
+
+            cond.acquire()
+            try:
+                cond.wait()
+                pair = result_holder[0]
+                if pair is not None:
+                    list_key, value = pair
+                    send_blpop_response(connection, list_key, value)
+            finally:
+                cond.release()
 
     else:
         connection.sendall(b"-ERR unknown command\r\n")
