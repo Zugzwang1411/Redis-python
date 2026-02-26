@@ -1,13 +1,12 @@
 """Admin command handlers: AUTH, PING, ECHO, TYPE, KEYS, CONFIG, ACL, INFO."""
 import hashlib
 
+import app.state as state_module
 from app.state import (
     acl_users,
     authenticated_connections,
     authenticated_connections_lock,
     global_database_lock,
-    rdb_dir,
-    rdb_dbfilename,
 )
 
 
@@ -103,9 +102,9 @@ def handle_config(connection, arguments):
                 param_name = str(arguments[1]).lower()
                 param_value = None
                 if param_name == "dir":
-                    param_value = rdb_dir
+                    param_value = state_module.rdb_dir
                 elif param_name == "dbfilename":
-                    param_value = rdb_dbfilename
+                    param_value = state_module.rdb_dbfilename
                 if param_value is not None:
                     name_bytes = param_name.encode('utf-8')
                     value_bytes = str(param_value).encode('utf-8')
