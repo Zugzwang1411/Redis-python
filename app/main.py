@@ -2108,9 +2108,12 @@ def execute_single_command(connection, command, arguments, Database, stream_last
         else:
             key = arguments[0]
             try:
-                _timeout = int(arguments[1])  # 0 = wait indefinitely (this stage)
-            except ValueError:
+                timeout = float(arguments[1])
+            except (ValueError, TypeError):
                 connection.sendall(b"-ERR value is not an integer or out of range\r\n")
+                return
+            if timeout < 0:
+                connection.sendall(b"-ERR timeout is negative\r\n")
                 return
 
             def send_blpop_response(conn, list_key, value):
@@ -2144,11 +2147,17 @@ def execute_single_command(connection, command, arguments, Database, stream_last
 
             cond.acquire()
             try:
-                cond.wait()
+                if timeout == 0:
+                    cond.wait()  # Infinite wait
+                else:
+                    cond.wait(timeout=timeout)  # Wait up to timeout seconds
+
                 pair = result_holder[0]
                 if pair is not None:
                     list_key, value = pair
                     send_blpop_response(connection, list_key, value)
+                else:
+                    connection.sendall(b"*-1\r\n")  # Timeout expired, null array
             finally:
                 cond.release()
 
